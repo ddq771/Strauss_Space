@@ -126,7 +126,9 @@ public static class PlanetSceneSetup
         var target = rocket.transform.position + normal * 0.015f;
         launchCameraObject.transform.rotation = Quaternion.LookRotation(target - cameraPosition, normal);
         var launchCamera = launchCameraObject.GetComponent<Camera>();
-        launchCamera.fieldOfView = 45f;
+        launchCamera.fieldOfView = 60f;
+        launchCamera.nearClipPlane = 0.01f;
+        launchCamera.farClipPlane = 2000f;
 
         var currentMainCamera = GameObject.FindWithTag("MainCamera");
         if (currentMainCamera != null && currentMainCamera != launchCameraObject)
@@ -137,6 +139,18 @@ public static class PlanetSceneSetup
 
         Selection.activeGameObject = platform;
         EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
+    }
+
+    [MenuItem("Strauss Space/Switch To Kenya Launch View")]
+    public static void SwitchToKenyaLaunchView()
+    {
+        CreateKenyaLaunchView();
+    }
+
+    [MenuItem("Strauss Space/Switch To World View")]
+    public static void SwitchToWorldView()
+    {
+        SetActiveCamera("World Camera", "Kenya Launch Camera");
     }
 
     public static void Create()
@@ -177,5 +191,25 @@ public static class PlanetSceneSetup
         rocket.transform.localScale = new Vector3(10f, 15f, 10f) * PlanetBody.WorldUnitsPerMeter;
         rocket.AddComponent<Rocket>();
         return rocket;
+    }
+
+    private static void SetActiveCamera(string activeCameraName, string inactiveCameraName)
+    {
+        var activeCamera = GameObject.Find(activeCameraName);
+        var inactiveCamera = GameObject.Find(inactiveCameraName);
+        if (activeCamera == null)
+        {
+            EditorUtility.DisplayDialog("Camera View", $"Could not find {activeCameraName}.", "OK");
+            return;
+        }
+
+        if (inactiveCamera != null)
+        {
+            inactiveCamera.tag = "Untagged";
+        }
+
+        activeCamera.tag = "MainCamera";
+        Selection.activeGameObject = activeCamera;
+        EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
     }
 }
