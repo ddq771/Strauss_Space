@@ -237,7 +237,29 @@ public static class PlanetSceneSetup
         }
 
         activeCamera.tag = "MainCamera";
+        if (activeCameraName == "World Camera")
+        {
+            ConfigureWorldCamera(activeCamera);
+        }
         Selection.activeGameObject = activeCamera;
         EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
+    }
+
+    private static void ConfigureWorldCamera(GameObject cameraObject)
+    {
+        var planet = GameObject.Find("Planet");
+        var camera = cameraObject.GetComponent<Camera>();
+        var planetBody = planet == null ? null : planet.GetComponent<PlanetBody>();
+        if (camera == null || planetBody == null)
+        {
+            return;
+        }
+
+        camera.transform.position = planet.transform.position + Vector3.back *
+                                    (planetBody.Radius * PlanetBody.WorldUnitsPerMeter * 2.5f);
+        camera.transform.LookAt(planet.transform.position);
+        camera.fieldOfView = 45f;
+        camera.nearClipPlane = 1f;
+        camera.farClipPlane = 100_000f;
     }
 }
