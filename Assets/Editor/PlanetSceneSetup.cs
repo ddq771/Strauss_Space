@@ -35,6 +35,32 @@ public static class PlanetSceneSetup
         EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
     }
 
+    [MenuItem("Shtraus Space/Create Rocket At Earth Surface")]
+    public static void CreateRocketAtEarthSurface()
+    {
+        var planet = GameObject.Find("Planet");
+        if (planet == null)
+        {
+            EditorUtility.DisplayDialog("Rocket", "Create the Planet first, then create the rocket.", "OK");
+            return;
+        }
+
+        var existingRocket = GameObject.Find("Rocket");
+        if (existingRocket != null)
+        {
+            Selection.activeGameObject = existingRocket;
+            return;
+        }
+
+        var rocket = CreateRocketObject();
+        var planetBody = planet.GetComponent<PlanetBody>();
+        rocket.transform.position = planet.transform.position + Vector3.up * (planetBody.Radius + 20f);
+        rocket.GetComponent<Rocket>().PlaceOnPlanetSurface(planetBody, 20f);
+
+        Selection.activeGameObject = rocket;
+        EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
+    }
+
     public static void Create()
     {
         var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
@@ -52,10 +78,22 @@ public static class PlanetSceneSetup
         var lightObject = new GameObject("Sun");
         var light = lightObject.AddComponent<Light>();
         light.type = LightType.Directional;
-        light.transform.rotation = Quaternion.Euler(35f, -30f, 0f);
+        light.transform.rotation = Quaternion.Euler(23.44f, -30f, 0f);
+
+        var rocket = CreateRocketObject();
+        rocket.transform.position = planet.transform.position + Vector3.up * 6_378_120f;
 
         EditorSceneManager.SaveScene(scene, "Assets/Scenes/PlanetScene.unity");
         AssetDatabase.SaveAssets();
         EditorApplication.Exit(0);
+    }
+
+    private static GameObject CreateRocketObject()
+    {
+        var rocket = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+        rocket.name = "Rocket";
+        rocket.transform.localScale = new Vector3(10f, 15f, 10f);
+        rocket.AddComponent<Rocket>();
+        return rocket;
     }
 }
