@@ -25,7 +25,8 @@ public sealed class PlanetBody : MonoBehaviour
 
     public float Radius => radius;
     public float Mass => mass;
-    public double SurfaceGravity => UniversalGravitationalConstant * mass / (radius * radius);
+    public double Gravity => UniversalGravitationalConstant * mass / (radius * radius);
+    public double SurfaceGravity => Gravity;
 
     private SphereCollider sphereCollider;
     private Rigidbody body;
