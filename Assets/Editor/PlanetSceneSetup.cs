@@ -5,7 +5,7 @@ using UnityEngine.SceneManagement;
 
 public static class PlanetSceneSetup
 {
-    [MenuItem("Shtraus Space/Create Planet Body")]
+    [MenuItem("Strauss Space/Create Planet Body")]
     public static void CreatePlanetInCurrentScene()
     {
         if (GameObject.Find("Planet") != null)
@@ -35,7 +35,7 @@ public static class PlanetSceneSetup
         EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
     }
 
-    [MenuItem("Shtraus Space/Create Rocket At Earth Surface")]
+    [MenuItem("Strauss Space/Create Rocket At Earth Surface")]
     public static void CreateRocketAtEarthSurface()
     {
         var planet = GameObject.Find("Planet");
@@ -62,7 +62,7 @@ public static class PlanetSceneSetup
         EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
     }
 
-    [MenuItem("Shtraus Space/Place Rocket In Kenya")]
+    [MenuItem("Strauss Space/Place Rocket In Kenya")]
     public static void PlaceRocketInKenya()
     {
         var planet = GameObject.Find("Planet");
@@ -84,7 +84,7 @@ public static class PlanetSceneSetup
         EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
     }
 
-    [MenuItem("Shtraus Space/Create Kenya Launch View")]
+    [MenuItem("Strauss Space/Create Kenya Launch View")]
     public static void CreateKenyaLaunchView()
     {
         var planet = GameObject.Find("Planet");
