@@ -17,6 +17,18 @@ public static class PlanetSceneSetup
         var planet = GameObject.CreatePrimitive(PrimitiveType.Sphere);
         planet.name = "Planet";
         planet.AddComponent<PlanetBody>();
+
+        var cameraObject = new GameObject("Main Camera");
+        cameraObject.tag = "MainCamera";
+        var camera = cameraObject.AddComponent<Camera>();
+        camera.transform.position = new Vector3(0f, 2f, -14f);
+        camera.transform.LookAt(planet.transform);
+
+        var lightObject = new GameObject("Sun");
+        var light = lightObject.AddComponent<Light>();
+        light.type = LightType.Directional;
+        light.transform.rotation = Quaternion.Euler(35f, -30f, 0f);
+
         Selection.activeGameObject = planet;
         EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
     }
