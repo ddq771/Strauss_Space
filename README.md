@@ -1,4 +1,4 @@
-# Shtraus Space
+# Strauss Space
 
 Unity project started with Unity 6000.3.22f1.
 
@@ -6,7 +6,7 @@ Unity project started with Unity 6000.3.22f1.
 
 1. Install/open Unity Hub and sign in with a Unity account.
 2. Add this folder as an existing project:
-   `/home/che/my_script_project/Shtraus_Space`
+   `/home/che/my_script_project/Strauss_Space`
 3. Select Unity 6000.3.22f1 when prompted.
 
 The repository intentionally excludes Unity-generated folders and the local Editor installation. See `.gitignore` for details.
@@ -22,7 +22,7 @@ git --git-dir=.git-data/.git --work-tree=. commit -m "Describe the change"
 git --git-dir=.git-data/.git --work-tree=. push
 ```
 
-The GitHub repository is private and available at `https://github.com/ddq771/Shtraus_Space`.
+The GitHub repository is private and available at `https://github.com/ddq771/Strauss_Space`.
 
 ## Local Editor installed for this machine
 
