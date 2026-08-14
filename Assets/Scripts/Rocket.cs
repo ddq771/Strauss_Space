@@ -26,6 +26,13 @@ public sealed class Rocket : MonoBehaviour
 
     [SerializeField] private bool engineEnabled;
 
+    [Header("Launch Site")]
+    [Tooltip("Latitude of the launch site in degrees. South is negative.")]
+    [SerializeField] private float launchLatitudeDegrees = -3.2f;
+
+    [Tooltip("Longitude of the launch site in degrees. East is positive.")]
+    [SerializeField] private float launchLongitudeDegrees = 40.1f;
+
     public float DryMass => dryMass;
     public float FuelMass => fuelMass;
     public float CurrentMass => dryMass + fuelMass;
@@ -33,6 +40,8 @@ public sealed class Rocket : MonoBehaviour
     public float SpecificImpulse => specificImpulse;
     public float Throttle => throttle;
     public bool EngineEnabled => engineEnabled;
+    public float LaunchLatitudeDegrees => launchLatitudeDegrees;
+    public float LaunchLongitudeDegrees => launchLongitudeDegrees;
 
     private Rigidbody body;
 
@@ -113,6 +122,35 @@ public sealed class Rocket : MonoBehaviour
         }
 
         var surfaceDistance = (planet.Radius + Mathf.Max(0f, clearance)) * PlanetBody.WorldUnitsPerMeter;
+        transform.position = planet.transform.position + outward * surfaceDistance;
+        transform.rotation = Quaternion.FromToRotation(Vector3.up, outward);
+    }
+
+    /// <summary>
+    /// Places the rocket at a latitude/longitude on a spherical planet.
+    /// Coordinates use degrees: north/east are positive, south/west negative.
+    /// </summary>
+    public void PlaceAtLatitudeLongitude(
+        PlanetBody planet,
+        float latitudeDegrees,
+        float longitudeDegrees,
+        float clearance = 1f)
+    {
+        if (planet == null || !IsFinite(planet.transform.position) ||
+            float.IsNaN(planet.Radius) || float.IsInfinity(planet.Radius))
+        {
+            Debug.LogError("Rocket cannot be placed because the planet has an invalid position or radius.", this);
+            return;
+        }
+
+        var latitude = latitudeDegrees * Mathf.Deg2Rad;
+        var longitude = longitudeDegrees * Mathf.Deg2Rad;
+        var outward = new Vector3(
+            Mathf.Cos(latitude) * Mathf.Cos(longitude),
+            Mathf.Sin(latitude),
+            Mathf.Cos(latitude) * Mathf.Sin(longitude));
+        var surfaceDistance = (planet.Radius + Mathf.Max(0f, clearance)) * PlanetBody.WorldUnitsPerMeter;
+
         transform.position = planet.transform.position + outward * surfaceDistance;
         transform.rotation = Quaternion.FromToRotation(Vector3.up, outward);
     }

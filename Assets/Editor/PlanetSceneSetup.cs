@@ -62,6 +62,28 @@ public static class PlanetSceneSetup
         EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
     }
 
+    [MenuItem("Shtraus Space/Place Rocket In Kenya")]
+    public static void PlaceRocketInKenya()
+    {
+        var planet = GameObject.Find("Planet");
+        var rocket = GameObject.Find("Rocket");
+        if (planet == null || rocket == null)
+        {
+            EditorUtility.DisplayDialog("Kenya Launch Site", "Create the Planet and Rocket first.", "OK");
+            return;
+        }
+
+        var planetBody = planet.GetComponent<PlanetBody>();
+        rocket.GetComponent<Rocket>().PlaceAtLatitudeLongitude(
+            planetBody,
+            latitudeDegrees: -3.2f,
+            longitudeDegrees: 40.1f,
+            clearance: 20f);
+
+        Selection.activeGameObject = rocket;
+        EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
+    }
+
     public static void Create()
     {
         var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
@@ -82,7 +104,11 @@ public static class PlanetSceneSetup
         light.transform.rotation = Quaternion.Euler(23.44f, -30f, 0f);
 
         var rocket = CreateRocketObject();
-        rocket.transform.position = planet.transform.position + Vector3.up * 6_378.12f;
+        rocket.GetComponent<Rocket>().PlaceAtLatitudeLongitude(
+            planet.GetComponent<PlanetBody>(),
+            latitudeDegrees: -3.2f,
+            longitudeDegrees: 40.1f,
+            clearance: 20f);
 
         EditorSceneManager.SaveScene(scene, "Assets/Scenes/PlanetScene.unity");
         AssetDatabase.SaveAssets();
