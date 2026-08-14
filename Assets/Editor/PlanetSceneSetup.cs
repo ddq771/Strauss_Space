@@ -84,6 +84,61 @@ public static class PlanetSceneSetup
         EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
     }
 
+    [MenuItem("Shtraus Space/Create Kenya Launch View")]
+    public static void CreateKenyaLaunchView()
+    {
+        var planet = GameObject.Find("Planet");
+        var rocket = GameObject.Find("Rocket");
+        if (planet == null || rocket == null)
+        {
+            EditorUtility.DisplayDialog("Kenya Launch View", "Create the Planet and Rocket first.", "OK");
+            return;
+        }
+
+        var planetBody = planet.GetComponent<PlanetBody>();
+        const float latitude = -3.2f;
+        const float longitude = 40.1f;
+        var normal = planetBody.GetSurfaceNormal(latitude, longitude);
+        var surface = planetBody.GetSurfacePosition(latitude, longitude);
+
+        var platform = GameObject.Find("Kenya Launch Platform");
+        if (platform == null)
+        {
+            platform = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            platform.name = "Kenya Launch Platform";
+            // 100 m diameter and 10 m thick, with 1 Unity unit = 1 km.
+            platform.transform.localScale = new Vector3(0.05f, 0.005f, 0.05f);
+        }
+
+        platform.transform.position = surface + normal * (5f * PlanetBody.WorldUnitsPerMeter);
+        platform.transform.rotation = Quaternion.FromToRotation(Vector3.up, normal);
+
+        var launchCameraObject = GameObject.Find("Kenya Launch Camera");
+        if (launchCameraObject == null)
+        {
+            launchCameraObject = new GameObject("Kenya Launch Camera");
+            launchCameraObject.AddComponent<Camera>();
+        }
+
+        var east = Vector3.Cross(Vector3.up, normal).normalized;
+        var cameraPosition = surface + normal * 0.08f + east * 0.18f;
+        launchCameraObject.transform.position = cameraPosition;
+        var target = rocket.transform.position + normal * 0.015f;
+        launchCameraObject.transform.rotation = Quaternion.LookRotation(target - cameraPosition, normal);
+        var launchCamera = launchCameraObject.GetComponent<Camera>();
+        launchCamera.fieldOfView = 45f;
+
+        var currentMainCamera = GameObject.FindWithTag("MainCamera");
+        if (currentMainCamera != null && currentMainCamera != launchCameraObject)
+        {
+            currentMainCamera.tag = "Untagged";
+        }
+        launchCameraObject.tag = "MainCamera";
+
+        Selection.activeGameObject = platform;
+        EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
+    }
+
     public static void Create()
     {
         var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);

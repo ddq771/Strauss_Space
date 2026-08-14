@@ -30,6 +30,26 @@ public sealed class PlanetBody : MonoBehaviour
     public double Gravity => UniversalGravitationalConstant * mass / ((double)radius * radius);
     public double SurfaceGravity => Gravity;
 
+    public Vector3 GetSurfaceNormal(float latitudeDegrees, float longitudeDegrees)
+    {
+        var latitude = latitudeDegrees * Mathf.Deg2Rad;
+        var longitude = longitudeDegrees * Mathf.Deg2Rad;
+        return new Vector3(
+            Mathf.Cos(latitude) * Mathf.Cos(longitude),
+            Mathf.Sin(latitude),
+            Mathf.Cos(latitude) * Mathf.Sin(longitude)).normalized;
+    }
+
+    public Vector3 GetSurfacePosition(
+        float latitudeDegrees,
+        float longitudeDegrees,
+        float clearanceMeters = 0f)
+    {
+        var normal = GetSurfaceNormal(latitudeDegrees, longitudeDegrees);
+        var distance = (radius + Mathf.Max(0f, clearanceMeters)) * WorldUnitsPerMeter;
+        return transform.position + normal * distance;
+    }
+
     private SphereCollider sphereCollider;
     private Rigidbody body;
     private readonly HashSet<Rigidbody> affectedBodies = new();

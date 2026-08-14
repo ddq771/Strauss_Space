@@ -143,15 +143,8 @@ public sealed class Rocket : MonoBehaviour
             return;
         }
 
-        var latitude = latitudeDegrees * Mathf.Deg2Rad;
-        var longitude = longitudeDegrees * Mathf.Deg2Rad;
-        var outward = new Vector3(
-            Mathf.Cos(latitude) * Mathf.Cos(longitude),
-            Mathf.Sin(latitude),
-            Mathf.Cos(latitude) * Mathf.Sin(longitude));
-        var surfaceDistance = (planet.Radius + Mathf.Max(0f, clearance)) * PlanetBody.WorldUnitsPerMeter;
-
-        transform.position = planet.transform.position + outward * surfaceDistance;
+        var outward = planet.GetSurfaceNormal(latitudeDegrees, longitudeDegrees);
+        transform.position = planet.GetSurfacePosition(latitudeDegrees, longitudeDegrees, clearance);
         transform.rotation = Quaternion.FromToRotation(Vector3.up, outward);
     }
 
