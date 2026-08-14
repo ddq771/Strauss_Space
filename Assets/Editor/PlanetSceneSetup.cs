@@ -87,6 +87,12 @@ public static class PlanetSceneSetup
     [MenuItem("Strauss Space/Create Kenya Launch View")]
     public static void CreateKenyaLaunchView()
     {
+        if (Application.isPlaying)
+        {
+            Debug.LogWarning("Stop Play Mode before changing the editor camera setup.");
+            return;
+        }
+
         var planet = GameObject.Find("Planet");
         var rocket = GameObject.Find("Rocket");
         if (planet == null || rocket == null)
@@ -120,6 +126,11 @@ public static class PlanetSceneSetup
             launchCameraObject.AddComponent<Camera>();
         }
 
+        if (launchCameraObject.GetComponent<RocketCameraController>() == null)
+        {
+            launchCameraObject.AddComponent<RocketCameraController>();
+        }
+
         var east = Vector3.Cross(Vector3.up, normal).normalized;
         var cameraPosition = surface + normal * 0.08f + east * 0.18f;
         launchCameraObject.transform.position = cameraPosition;
@@ -151,6 +162,23 @@ public static class PlanetSceneSetup
     public static void SwitchToWorldView()
     {
         SetActiveCamera("World Camera", "Kenya Launch Camera");
+    }
+
+    [MenuItem("Strauss Space/Return To Rocket Work Environment")]
+    public static void ReturnToRocketWorkEnvironment()
+    {
+        if (Application.isPlaying)
+        {
+            Debug.LogWarning("Stop Play Mode before returning to the editor work environment.");
+            return;
+        }
+
+        CreateKenyaLaunchView();
+        var rocket = GameObject.Find("Rocket");
+        if (rocket != null)
+        {
+            Selection.activeGameObject = rocket;
+        }
     }
 
     public static void Create()
