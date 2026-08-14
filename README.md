@@ -24,6 +24,13 @@ git --git-dir=.git-data/.git --work-tree=. push
 
 The GitHub repository is private and available at `https://github.com/ddq771/Strauss_Space`.
 
+## Reliable local Unity launch
+
+Start the Editor with `bash launch-strauss-space.sh`. This uses the same
+project-local Hub profile every time, so Unity and Unity Hub share the same
+license store. Unity Personal still requires the account to remain signed in
+and may occasionally need online license validation.
+
 ## Local Editor installed for this machine
 
 The project-local tools folder contains Unity Hub 3.19.5 and Unity Editor 6000.3.22f1. These are local machine tooling and are not tracked by Git.
