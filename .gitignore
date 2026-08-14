@@ -1,5 +1,6 @@
 # Unity generated folders and files
 [Ll]ibrary/
+[Ll]ibrary.stale*/
 [Tt]emp/
 [Oo]bj/
 [Bb]uild/
@@ -34,3 +35,5 @@ Thumbs.db
 sysinfo.txt
 crashlytics-build.properties
 
+# Local launcher shortcut
+*.desktop
