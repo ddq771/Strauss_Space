@@ -35,6 +35,10 @@ public sealed class RocketCameraController : MonoBehaviour
         }
 
         var scroll = Input.mouseScrollDelta.y;
+        if (Mathf.Abs(scroll) < 0.001f)
+        {
+            scroll = Input.GetAxis("Mouse ScrollWheel") * 10f;
+        }
         if (Mathf.Abs(scroll) > 0.001f)
         {
             if (scroll > 0f && !localCamera.enabled)

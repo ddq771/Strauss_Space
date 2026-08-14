@@ -156,6 +156,7 @@ public sealed class Rocket : MonoBehaviour
         maxThrust = Mathf.Max(0f, maxThrust);
         specificImpulse = Mathf.Max(0.01f, specificImpulse);
         throttle = Mathf.Clamp01(throttle);
+        body.useGravity = false;
         body.mass = CurrentMass;
     }
 

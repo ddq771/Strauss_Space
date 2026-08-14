@@ -181,7 +181,7 @@ Rigidbody:
     m_Bits: 0
   m_ImplicitCom: 1
   m_ImplicitTensor: 1
-  m_UseGravity: 1
+  m_UseGravity: 0
   m_IsKinematic: 0
   m_Interpolate: 0
   m_Constraints: 0
@@ -531,7 +531,7 @@ Rigidbody:
     m_Bits: 0
   m_ImplicitCom: 1
   m_ImplicitTensor: 1
-  m_UseGravity: 1
+  m_UseGravity: 0
   m_IsKinematic: 0
   m_Interpolate: 0
   m_Constraints: 0
@@ -641,6 +641,7 @@ GameObject:
   m_Component:
   - component: {fileID: 1811391198}
   - component: {fileID: 1811391197}
+  - component: {fileID: 1811391199}
   m_Layer: 0
   m_Name: Kenya Launch Camera
   m_TagString: MainCamera
@@ -648,6 +649,22 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
+--- !u!114 &1811391199
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1811391196}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a7d3f1c94b8e4a2f91d6c7e5b0a84321, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Assembly-CSharp::RocketCameraController
+  distanceKm: 0.08
+  minimumDistanceKm: 0.035
+  localViewLimitKm: 50
+  scrollSensitivity: 0.18
 --- !u!20 &1811391197
 Camera:
   m_ObjectHideFlags: 0

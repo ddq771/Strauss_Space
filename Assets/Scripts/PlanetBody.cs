@@ -134,6 +134,7 @@ public sealed class PlanetBody : MonoBehaviour
         // object keeps the visible mesh and the collider at the same radius.
         sphereCollider.radius = 0.5f;
         transform.localScale = Vector3.one * (radius * 2f * WorldUnitsPerMeter);
+        body.useGravity = false;
         body.mass = mass;
     }
 
