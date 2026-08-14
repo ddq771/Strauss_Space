@@ -99,13 +99,21 @@ public sealed class Rocket : MonoBehaviour
     /// </summary>
     public void PlaceOnPlanetSurface(PlanetBody planet, float clearance = 1f)
     {
+        if (planet == null || !IsFinite(planet.transform.position) ||
+            float.IsNaN(planet.Radius) || float.IsInfinity(planet.Radius))
+        {
+            Debug.LogError("Rocket cannot be placed because the planet has an invalid position or radius.", this);
+            return;
+        }
+
         var outward = (transform.position - planet.transform.position).normalized;
-        if (outward.sqrMagnitude < 0.001f)
+        if (!IsFinite(outward) || outward.sqrMagnitude < 0.001f)
         {
             outward = Vector3.up;
         }
 
-        transform.position = planet.transform.position + outward * (planet.Radius + clearance);
+        var surfaceDistance = (planet.Radius + Mathf.Max(0f, clearance)) * PlanetBody.WorldUnitsPerMeter;
+        transform.position = planet.transform.position + outward * surfaceDistance;
         transform.rotation = Quaternion.FromToRotation(Vector3.up, outward);
     }
 
@@ -118,5 +126,12 @@ public sealed class Rocket : MonoBehaviour
         specificImpulse = Mathf.Max(0.01f, specificImpulse);
         throttle = Mathf.Clamp01(throttle);
         body.mass = CurrentMass;
+    }
+
+    private static bool IsFinite(Vector3 value)
+    {
+        return !float.IsNaN(value.x) && !float.IsInfinity(value.x) &&
+               !float.IsNaN(value.y) && !float.IsInfinity(value.y) &&
+               !float.IsNaN(value.z) && !float.IsInfinity(value.z);
     }
 }

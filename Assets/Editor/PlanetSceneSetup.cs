@@ -54,7 +54,8 @@ public static class PlanetSceneSetup
 
         var rocket = CreateRocketObject();
         var planetBody = planet.GetComponent<PlanetBody>();
-        rocket.transform.position = planet.transform.position + Vector3.up * (planetBody.Radius + 20f);
+        rocket.transform.position = planet.transform.position +
+                                    Vector3.up * ((planetBody.Radius + 20f) * PlanetBody.WorldUnitsPerMeter);
         rocket.GetComponent<Rocket>().PlaceOnPlanetSurface(planetBody, 20f);
 
         Selection.activeGameObject = rocket;
@@ -81,7 +82,7 @@ public static class PlanetSceneSetup
         light.transform.rotation = Quaternion.Euler(23.44f, -30f, 0f);
 
         var rocket = CreateRocketObject();
-        rocket.transform.position = planet.transform.position + Vector3.up * 6_378_120f;
+        rocket.transform.position = planet.transform.position + Vector3.up * 6_378.12f;
 
         EditorSceneManager.SaveScene(scene, "Assets/Scenes/PlanetScene.unity");
         AssetDatabase.SaveAssets();
@@ -92,7 +93,7 @@ public static class PlanetSceneSetup
     {
         var rocket = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
         rocket.name = "Rocket";
-        rocket.transform.localScale = new Vector3(10f, 15f, 10f);
+        rocket.transform.localScale = new Vector3(10f, 15f, 10f) * PlanetBody.WorldUnitsPerMeter;
         rocket.AddComponent<Rocket>();
         return rocket;
     }

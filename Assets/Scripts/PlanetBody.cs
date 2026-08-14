@@ -5,7 +5,9 @@ using System.Collections.Generic;
 [RequireComponent(typeof(Rigidbody))]
 public sealed class PlanetBody : MonoBehaviour
 {
-    // Unity units are treated as metres and Rigidbody mass as kilograms.
+    // Physical properties remain SI units. The scene uses kilometres so
+    // Earth-sized objects remain inside Unity physics' stable coordinate range.
+    public const float WorldUnitsPerMeter = 0.001f;
     public const double UniversalGravitationalConstant = 6.67430e-11;
 
     [Min(0.01f)]
@@ -19,7 +21,7 @@ public sealed class PlanetBody : MonoBehaviour
 
     [Tooltip("Maximum distance at which this planet applies gravity. Set to 0 for no cutoff.")]
     [Min(0f)]
-    [SerializeField] private float gravityInfluenceRadius = 100_000_000f;
+    [SerializeField] private float gravityInfluenceRadius = 10_000_000f;
 
     [SerializeField] private LayerMask affectedLayers = ~0;
 
@@ -54,7 +56,9 @@ public sealed class PlanetBody : MonoBehaviour
             return;
         }
 
-        var searchRadius = gravityInfluenceRadius > 0f ? gravityInfluenceRadius : float.MaxValue;
+        var searchRadius = gravityInfluenceRadius > 0f
+            ? gravityInfluenceRadius * WorldUnitsPerMeter
+            : float.MaxValue;
         var colliders = Physics.OverlapSphere(
             transform.position,
             searchRadius,
@@ -83,9 +87,19 @@ public sealed class PlanetBody : MonoBehaviour
     public Vector3 GetGravityAcceleration(Vector3 worldPosition)
     {
         var offsetToCenter = transform.position - worldPosition;
-        var distance = System.Math.Max((double)offsetToCenter.magnitude, radius);
-        var acceleration = UniversalGravitationalConstant * mass / (distance * distance);
-        return offsetToCenter.normalized * (float)acceleration;
+        if (!IsFinite(offsetToCenter))
+        {
+            return Vector3.zero;
+        }
+
+        var distanceInMeters = System.Math.Max(
+            (double)offsetToCenter.magnitude / WorldUnitsPerMeter,
+            radius);
+        var accelerationInMeters = UniversalGravitationalConstant * mass /
+                                   (distanceInMeters * distanceInMeters);
+        var accelerationInWorldUnits = accelerationInMeters * WorldUnitsPerMeter;
+        var direction = offsetToCenter.sqrMagnitude > 0f ? offsetToCenter.normalized : Vector3.zero;
+        return direction * (float)accelerationInWorldUnits;
     }
 
     private void ApplyPhysicsProperties()
@@ -99,7 +113,14 @@ public sealed class PlanetBody : MonoBehaviour
         // Unity's primitive sphere has a local radius of 0.5. Scaling the
         // object keeps the visible mesh and the collider at the same radius.
         sphereCollider.radius = 0.5f;
-        transform.localScale = Vector3.one * (radius * 2f);
+        transform.localScale = Vector3.one * (radius * 2f * WorldUnitsPerMeter);
         body.mass = mass;
+    }
+
+    private static bool IsFinite(Vector3 value)
+    {
+        return !float.IsNaN(value.x) && !float.IsInfinity(value.x) &&
+               !float.IsNaN(value.y) && !float.IsInfinity(value.y) &&
+               !float.IsNaN(value.z) && !float.IsInfinity(value.z);
     }
 }
