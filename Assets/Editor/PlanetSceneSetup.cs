@@ -27,7 +27,9 @@ public static class PlanetSceneSetup
         var lightObject = new GameObject("Sun");
         var light = lightObject.AddComponent<Light>();
         light.type = LightType.Directional;
-        light.transform.rotation = Quaternion.Euler(35f, -30f, 0f);
+        // Earth baseline: 23.44 degree axial tilt. The exact Sun direction
+        // in a real simulation would also depend on date, time, and location.
+        light.transform.rotation = Quaternion.Euler(23.44f, -30f, 0f);
 
         Selection.activeGameObject = planet;
         EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
