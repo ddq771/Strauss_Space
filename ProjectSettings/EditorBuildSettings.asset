@@ -4,6 +4,9 @@
 EditorBuildSettings:
   m_ObjectHideFlags: 0
   serializedVersion: 2
-  m_Scenes: []
+  m_Scenes:
+  - enabled: 1
+    path: Assets/Scenes/PlanetScene.unity
+    guid: 788dc5b3d7c474c04b32caaa9c430d3f
   m_configObjects: {}
   m_UseUCBPForAssetBundles: 0
