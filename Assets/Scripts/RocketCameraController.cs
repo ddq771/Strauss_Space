@@ -136,6 +136,14 @@ public sealed class RocketCameraController : MonoBehaviour
 
     private void UpdateLocalCamera()
     {
+        if (!IsFinite(rocket.transform.position) ||
+            !IsFinite(planet.transform.position) ||
+            float.IsNaN(distanceKm) || float.IsInfinity(distanceKm))
+        {
+            distanceKm = 0.08f;
+            return;
+        }
+
         var outward = (rocket.transform.position - planet.transform.position).normalized;
         if (outward.sqrMagnitude < 0.001f)
         {
@@ -157,6 +165,11 @@ public sealed class RocketCameraController : MonoBehaviour
         var localRotation = Quaternion.LookRotation(
             -east,
             outward);
+
+        if (!IsFinite(localPosition) || !IsFinite(localRotation))
+        {
+            return;
+        }
 
         var transition = Mathf.InverseLerp(
             localViewLimitKm,
@@ -187,6 +200,10 @@ public sealed class RocketCameraController : MonoBehaviour
 
         var cameraPosition = Vector3.Lerp(localPosition, planetaryPosition, transition);
         var cameraRotation = Quaternion.Slerp(localRotation, planetaryRotation, transition);
+        if (!IsFinite(cameraPosition) || !IsFinite(cameraRotation))
+        {
+            return;
+        }
         localCamera.transform.SetPositionAndRotation(cameraPosition, cameraRotation);
         localCamera.fieldOfView = 55f;
         localCamera.nearClipPlane = 0.001f;
@@ -219,5 +236,20 @@ public sealed class RocketCameraController : MonoBehaviour
     {
         var worldObject = GameObject.Find("World Camera");
         return worldObject == null ? null : worldObject.GetComponent<Camera>();
+    }
+
+    private static bool IsFinite(Vector3 value)
+    {
+        return !float.IsNaN(value.x) && !float.IsInfinity(value.x) &&
+               !float.IsNaN(value.y) && !float.IsInfinity(value.y) &&
+               !float.IsNaN(value.z) && !float.IsInfinity(value.z);
+    }
+
+    private static bool IsFinite(Quaternion value)
+    {
+        return !float.IsNaN(value.x) && !float.IsInfinity(value.x) &&
+               !float.IsNaN(value.y) && !float.IsInfinity(value.y) &&
+               !float.IsNaN(value.z) && !float.IsInfinity(value.z) &&
+               !float.IsNaN(value.w) && !float.IsInfinity(value.w);
     }
 }

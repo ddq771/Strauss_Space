@@ -44,6 +44,7 @@ public sealed class Rocket : MonoBehaviour
     public float LaunchLongitudeDegrees => launchLongitudeDegrees;
 
     private Rigidbody body;
+    private bool launchClampReleased;
 
     private void Reset()
     {
@@ -72,6 +73,7 @@ public sealed class Rocket : MonoBehaviour
             body.linearVelocity = Vector3.zero;
             body.angularVelocity = Vector3.zero;
             EnsureLaunchPlatformCollider();
+            SetLaunchClamp(true);
         }
     }
 
@@ -110,6 +112,24 @@ public sealed class Rocket : MonoBehaviour
 
     private void FixedUpdate()
     {
+        if (!IsFinite(transform.position) || !IsFinite(body.linearVelocity) ||
+            !IsFinite(body.angularVelocity))
+        {
+            Debug.LogError("Rocket physics became invalid. Restoring the Kenya launch position.", this);
+            var planet = FindFirstObjectByType<PlanetBody>();
+            if (planet != null)
+            {
+                PlaceAtLatitudeLongitude(
+                    planet,
+                    launchLatitudeDegrees,
+                    launchLongitudeDegrees,
+                    clearance: 25f);
+            }
+
+            SetLaunchClamp(true);
+            return;
+        }
+
         if (!engineEnabled || throttle <= 0f || fuelMass <= 0f)
         {
             return;
@@ -133,6 +153,10 @@ public sealed class Rocket : MonoBehaviour
     {
         throttle = Mathf.Clamp01(requestedThrottle);
         engineEnabled = throttle > 0f && fuelMass > 0f;
+        if (engineEnabled && !launchClampReleased)
+        {
+            SetLaunchClamp(false);
+        }
     }
 
     public void StopEngine()
@@ -206,6 +230,26 @@ public sealed class Rocket : MonoBehaviour
         throttle = Mathf.Clamp01(throttle);
         body.useGravity = false;
         body.mass = CurrentMass;
+    }
+
+    private void SetLaunchClamp(bool clamped)
+    {
+        if (clamped)
+        {
+            if (!body.isKinematic)
+            {
+                body.linearVelocity = Vector3.zero;
+                body.angularVelocity = Vector3.zero;
+            }
+            body.isKinematic = true;
+        }
+        else
+        {
+            body.isKinematic = false;
+            body.linearVelocity = Vector3.zero;
+            body.angularVelocity = Vector3.zero;
+        }
+        launchClampReleased = !clamped;
     }
 
     private static bool IsFinite(Vector3 value)
