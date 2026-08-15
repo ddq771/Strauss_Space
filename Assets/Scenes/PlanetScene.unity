@@ -182,7 +182,7 @@ Rigidbody:
   m_ImplicitCom: 1
   m_ImplicitTensor: 1
   m_UseGravity: 0
-  m_IsKinematic: 0
+  m_IsKinematic: 1
   m_Interpolate: 0
   m_Constraints: 0
   m_CollisionDetection: 0
@@ -252,7 +252,7 @@ SphereCollider:
   m_LayerOverridePriority: 0
   m_IsTrigger: 0
   m_ProvidesContacts: 0
-  m_Enabled: 1
+  m_Enabled: 0
   serializedVersion: 3
   m_Radius: 0.5
   m_Center: {x: 0, y: 0, z: 0}
@@ -664,6 +664,7 @@ MonoBehaviour:
   distanceKm: 0.08
   minimumDistanceKm: 0.035
   localViewLimitKm: 50
+  planetaryViewDistanceKm: 16000
   scrollSensitivity: 0.18
 --- !u!20 &1811391197
 Camera:

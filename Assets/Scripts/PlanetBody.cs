@@ -135,6 +135,16 @@ public sealed class PlanetBody : MonoBehaviour
         sphereCollider.radius = 0.5f;
         transform.localScale = Vector3.one * (radius * 2f * WorldUnitsPerMeter);
         body.useGravity = false;
+        // Earth is the fixed reference body for this simulation. Its custom
+        // gravity is calculated below; PhysX must not try to move a dynamic
+        // Earth with a 5.97e24 kg mass, which can produce invalid AABBs.
+        body.isKinematic = true;
+        // The planet is represented visually and by custom gravity. A
+        // 12,756-km PhysX collider is not needed for the launch scene and can
+        // destabilize broad-phase bounds at this scale. The launch platform
+        // supplies the physical surface for the rocket.
+        sphereCollider.enabled = false;
+        body.detectCollisions = false;
         body.mass = mass;
     }
 

@@ -7,7 +7,9 @@ public sealed class RocketCameraController : MonoBehaviour
     [SerializeField] private float distanceKm = 0.08f;
     [SerializeField] private float minimumDistanceKm = 0.035f;
     [SerializeField] private float localViewLimitKm = 50f;
+    [SerializeField] private float planetaryViewDistanceKm = 16_000f;
     [SerializeField] private float scrollSensitivity = 0.18f;
+    [SerializeField] private KeyCode toggleViewKey = KeyCode.V;
 
     private Camera localCamera;
     private Camera worldCamera;
@@ -34,6 +36,12 @@ public sealed class RocketCameraController : MonoBehaviour
             return;
         }
 
+        if (Input.GetKeyDown(toggleViewKey))
+        {
+            ToggleRocketPlanetView();
+            return;
+        }
+
         var scroll = Input.mouseScrollDelta.y;
         if (Mathf.Abs(scroll) < 0.001f)
         {
@@ -50,9 +58,9 @@ public sealed class RocketCameraController : MonoBehaviour
                 distanceKm = Mathf.Clamp(
                     distanceKm * Mathf.Pow(1f - scrollSensitivity, scroll),
                     minimumDistanceKm,
-                    localViewLimitKm * 1.1f);
+                    planetaryViewDistanceKm);
 
-                if (distanceKm > localViewLimitKm)
+                if (distanceKm >= planetaryViewDistanceKm)
                 {
                     SwitchToWorldView();
                 }
@@ -96,12 +104,29 @@ public sealed class RocketCameraController : MonoBehaviour
         localCamera.tag = "Untagged";
         worldCamera.enabled = true;
         worldCamera.tag = "MainCamera";
+        GetPlanetaryCameraPose(out var position, out var rotation);
+        worldCamera.transform.SetPositionAndRotation(position, rotation);
         worldCamera.fieldOfView = 45f;
         worldCamera.nearClipPlane = 1f;
         worldCamera.farClipPlane = 100_000f;
-        worldCamera.transform.position = planet.transform.position + Vector3.back *
-                                         (planet.Radius * PlanetBody.WorldUnitsPerMeter * 2.5f);
-        worldCamera.transform.LookAt(planet.transform.position);
+    }
+
+    /// <summary>
+    /// Jumps between the close rocket view and the full planetary view.
+    /// This method can also be assigned directly to a Unity UI Button.
+    /// </summary>
+    public void ToggleRocketPlanetView()
+    {
+        if (localCamera != null && localCamera.enabled)
+        {
+            distanceKm = planetaryViewDistanceKm;
+            SwitchToWorldView();
+        }
+        else
+        {
+            distanceKm = Mathf.Clamp(0.08f, minimumDistanceKm, localViewLimitKm);
+            SwitchToLocalView();
+        }
     }
 
     private void UpdateLocalCamera()
@@ -112,19 +137,59 @@ public sealed class RocketCameraController : MonoBehaviour
             outward = Vector3.up;
         }
 
-        var east = Vector3.Cross(Vector3.up, outward).normalized;
-        var offsetDirection = (east * 0.85f + outward * 0.5f).normalized;
-        var target = rocket.transform.position + outward * 0.005f;
-        var cameraPosition = rocket.transform.position +
-                             offsetDirection * (distanceKm * 0.001f);
+        var east = Vector3.Cross(Vector3.up, outward);
+        if (east.sqrMagnitude < 0.000001f)
+        {
+            east = Vector3.Cross(Vector3.forward, outward);
+        }
+        east.Normalize();
 
-        localCamera.transform.position = cameraPosition;
-        localCamera.transform.rotation = Quaternion.LookRotation(
-            target - cameraPosition,
+        // At close range the camera sits beside the rocket, not above it.
+        // This produces a normal landscape view with the rocket centered.
+        var closeDistanceKm = Mathf.Min(distanceKm, localViewLimitKm);
+        var localPosition = rocket.transform.position +
+                            east * (closeDistanceKm * PlanetBody.WorldUnitsPerMeter);
+        var localRotation = Quaternion.LookRotation(
+            -east,
             outward);
+
+        var transition = Mathf.InverseLerp(
+            localViewLimitKm,
+            planetaryViewDistanceKm,
+            distanceKm);
+        var planetaryPosition = GetPlanetaryCameraPosition();
+        var planetaryRotation = Quaternion.LookRotation(
+            planet.transform.position - planetaryPosition,
+            Vector3.up);
+
+        var cameraPosition = Vector3.Lerp(localPosition, planetaryPosition, transition);
+        var cameraRotation = Quaternion.Slerp(localRotation, planetaryRotation, transition);
+        localCamera.transform.SetPositionAndRotation(cameraPosition, cameraRotation);
         localCamera.fieldOfView = 55f;
         localCamera.nearClipPlane = 0.001f;
-        localCamera.farClipPlane = 100f;
+        localCamera.farClipPlane = 100_000f;
+    }
+
+    private Vector3 GetPlanetaryCameraPosition()
+    {
+        var outward = (rocket.transform.position - planet.transform.position).normalized;
+        var east = Vector3.Cross(Vector3.up, outward);
+        if (east.sqrMagnitude < 0.000001f)
+        {
+            east = Vector3.Cross(Vector3.forward, outward);
+        }
+
+        var viewDirection = (outward + east.normalized * 0.8f).normalized;
+        return planet.transform.position +
+               viewDirection * (planetaryViewDistanceKm * PlanetBody.WorldUnitsPerMeter);
+    }
+
+    private void GetPlanetaryCameraPose(out Vector3 position, out Quaternion rotation)
+    {
+        position = GetPlanetaryCameraPosition();
+        rotation = Quaternion.LookRotation(
+            planet.transform.position - position,
+            Vector3.up);
     }
 
     private static Camera FindWorldCamera()

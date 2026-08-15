@@ -135,7 +135,14 @@ public static class PlanetSceneSetup
         var cameraPosition = surface + normal * 0.08f + east * 0.18f;
         launchCameraObject.transform.position = cameraPosition;
         var target = rocket.transform.position + normal * 0.015f;
-        launchCameraObject.transform.rotation = Quaternion.LookRotation(target - cameraPosition, normal);
+        var uprightForward = Vector3.ProjectOnPlane(target - cameraPosition, normal);
+        if (uprightForward.sqrMagnitude < 0.000001f)
+        {
+            uprightForward = Vector3.Cross(normal, Vector3.right);
+        }
+        launchCameraObject.transform.rotation = Quaternion.LookRotation(
+            uprightForward.normalized,
+            normal.normalized);
         var launchCamera = launchCameraObject.GetComponent<Camera>();
         launchCamera.fieldOfView = 60f;
         launchCamera.nearClipPlane = 0.01f;
