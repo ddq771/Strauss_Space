@@ -55,6 +55,54 @@ public sealed class Rocket : MonoBehaviour
         ApplyMass();
     }
 
+    private void Start()
+    {
+        // Restore a deterministic launch configuration whenever the
+        // simulation starts. This keeps the cylinder aligned with the local
+        // Earth surface normal instead of inheriting a stale scene rotation.
+        var planet = FindFirstObjectByType<PlanetBody>();
+        if (planet != null)
+        {
+            PlaceAtLatitudeLongitude(
+                planet,
+                launchLatitudeDegrees,
+                launchLongitudeDegrees,
+                clearance: 25f);
+
+            body.linearVelocity = Vector3.zero;
+            body.angularVelocity = Vector3.zero;
+            EnsureLaunchPlatformCollider();
+        }
+    }
+
+    private static void EnsureLaunchPlatformCollider()
+    {
+        var platform = GameObject.Find("Kenya Launch Platform");
+        if (platform == null)
+        {
+            return;
+        }
+
+        // The primitive cylinder's default CapsuleCollider is much taller
+        // than the visible, thin launch platform after scaling. Replace it
+        // with a unit BoxCollider so the collider follows the mesh thickness.
+        var capsule = platform.GetComponent<CapsuleCollider>();
+        if (capsule != null)
+        {
+            capsule.enabled = false;
+        }
+
+        var box = platform.GetComponent<BoxCollider>();
+        if (box == null)
+        {
+            box = platform.AddComponent<BoxCollider>();
+        }
+
+        box.center = Vector3.zero;
+        box.size = new Vector3(1f, 2f, 1f);
+        box.enabled = true;
+    }
+
     private void OnValidate()
     {
         ApplyMass();

@@ -15,6 +15,7 @@ public sealed class RocketCameraController : MonoBehaviour
     private Camera worldCamera;
     private PlanetBody planet;
     private Rocket rocket;
+    private bool alignLocalHorizonOnNextLocalView;
 
     private void Awake()
     {
@@ -89,6 +90,9 @@ public sealed class RocketCameraController : MonoBehaviour
 
         localCamera.enabled = true;
         localCamera.tag = "MainCamera";
+        localCamera.clearFlags = CameraClearFlags.SolidColor;
+        localCamera.backgroundColor = new Color(0.32f, 0.55f, 0.82f, 1f);
+        alignLocalHorizonOnNextLocalView = true;
         UpdateLocalCamera();
     }
 
@@ -104,6 +108,7 @@ public sealed class RocketCameraController : MonoBehaviour
         localCamera.tag = "Untagged";
         worldCamera.enabled = true;
         worldCamera.tag = "MainCamera";
+        worldCamera.clearFlags = CameraClearFlags.Skybox;
         GetPlanetaryCameraPose(out var position, out var rotation);
         worldCamera.transform.SetPositionAndRotation(position, rotation);
         worldCamera.fieldOfView = 45f;
@@ -148,7 +153,7 @@ public sealed class RocketCameraController : MonoBehaviour
         // This produces a normal landscape view with the rocket centered.
         var closeDistanceKm = Mathf.Min(distanceKm, localViewLimitKm);
         var localPosition = rocket.transform.position +
-                            east * (closeDistanceKm * PlanetBody.WorldUnitsPerMeter);
+                            east * closeDistanceKm;
         var localRotation = Quaternion.LookRotation(
             -east,
             outward);
@@ -157,6 +162,24 @@ public sealed class RocketCameraController : MonoBehaviour
             localViewLimitKm,
             planetaryViewDistanceKm,
             distanceKm);
+
+        // In the ground/landscape range, always rebuild the rotation from
+        // the local Earth frame. This guarantees a level horizon every time
+        // local view is entered, even after switching cameras or zooming.
+        if (transition <= 0.0001f)
+        {
+            localCamera.transform.position = localPosition;
+            if (alignLocalHorizonOnNextLocalView)
+            {
+                localCamera.transform.rotation = localRotation;
+                alignLocalHorizonOnNextLocalView = false;
+            }
+            localCamera.fieldOfView = 55f;
+            localCamera.nearClipPlane = 0.001f;
+            localCamera.farClipPlane = 100_000f;
+            return;
+        }
+
         var planetaryPosition = GetPlanetaryCameraPosition();
         var planetaryRotation = Quaternion.LookRotation(
             planet.transform.position - planetaryPosition,
@@ -181,7 +204,7 @@ public sealed class RocketCameraController : MonoBehaviour
 
         var viewDirection = (outward + east.normalized * 0.8f).normalized;
         return planet.transform.position +
-               viewDirection * (planetaryViewDistanceKm * PlanetBody.WorldUnitsPerMeter);
+               viewDirection * planetaryViewDistanceKm;
     }
 
     private void GetPlanetaryCameraPose(out Vector3 position, out Quaternion rotation)

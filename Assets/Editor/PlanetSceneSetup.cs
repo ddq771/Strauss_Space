@@ -56,7 +56,7 @@ public static class PlanetSceneSetup
         var planetBody = planet.GetComponent<PlanetBody>();
         rocket.transform.position = planet.transform.position +
                                     Vector3.up * ((planetBody.Radius + 20f) * PlanetBody.WorldUnitsPerMeter);
-        rocket.GetComponent<Rocket>().PlaceOnPlanetSurface(planetBody, 20f);
+        rocket.GetComponent<Rocket>().PlaceOnPlanetSurface(planetBody, 25f);
 
         Selection.activeGameObject = rocket;
         EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
@@ -78,7 +78,7 @@ public static class PlanetSceneSetup
             planetBody,
             latitudeDegrees: -3.2f,
             longitudeDegrees: 40.1f,
-            clearance: 20f);
+            clearance: 25f);
 
         Selection.activeGameObject = rocket;
         EditorSceneManager.MarkSceneDirty(SceneManager.GetActiveScene());
@@ -118,6 +118,20 @@ public static class PlanetSceneSetup
 
         platform.transform.position = surface + normal * (5f * PlanetBody.WorldUnitsPerMeter);
         platform.transform.rotation = Quaternion.FromToRotation(Vector3.up, normal);
+
+        var capsule = platform.GetComponent<CapsuleCollider>();
+        if (capsule != null)
+        {
+            Object.DestroyImmediate(capsule);
+        }
+
+        var box = platform.GetComponent<BoxCollider>();
+        if (box == null)
+        {
+            box = platform.AddComponent<BoxCollider>();
+        }
+        box.center = Vector3.zero;
+        box.size = new Vector3(1f, 2f, 1f);
 
         var launchCameraObject = GameObject.Find("Kenya Launch Camera");
         if (launchCameraObject == null)
