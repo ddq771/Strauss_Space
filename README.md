@@ -34,3 +34,6 @@ and may occasionally need online license validation.
 ## Local Editor installed for this machine
 
 The project-local tools folder contains Unity Hub 3.19.5 and Unity Editor 6000.3.22f1. These are local machine tooling and are not tracked by Git.
+
+
+ТОЖЕ ТЕКСТ
