@@ -26,7 +26,7 @@ RenderSettings:
   m_AmbientIntensity: 1
   m_AmbientMode: 0
   m_SubtractiveShadowColor: {r: 0.42, g: 0.478, b: 0.627, a: 1}
-  m_SkyboxMaterial: {fileID: 10304, guid: 0000000000000000f000000000000000, type: 0}
+  m_SkyboxMaterial: {fileID: 2100000, guid: 1e2d3c4b5a697887a1b2c3d4e5f60829, type: 2}
   m_HaloStrength: 0.5
   m_FlareStrength: 1
   m_FlareFadeSpeed: 3
@@ -152,10 +152,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: acb082d5b080af31a91c3302b34678a3, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::PlanetBody
-  radius: 6378100
+  radius: 19134300
   mass: 5.9722e+24
   gravityEnabled: 1
-  gravityInfluenceRadius: 10000000
+  gravityInfluenceRadius: 30000000
   affectedLayers:
     serializedVersion: 2
     m_Bits: 4294967295
@@ -179,8 +179,8 @@ Rigidbody:
   m_ExcludeLayers:
     serializedVersion: 2
     m_Bits: 0
-  m_ImplicitCom: 1
-  m_ImplicitTensor: 1
+  m_ImplicitCom: 0
+  m_ImplicitTensor: 0
   m_UseGravity: 0
   m_IsKinematic: 1
   m_Interpolate: 0
@@ -274,7 +274,7 @@ Transform:
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 12756.2, y: 12756.2, z: 12756.2}
+  m_LocalScale: {x: 38268.6, y: 38268.6, z: 38268.6}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
@@ -365,7 +365,7 @@ Transform:
   m_GameObject: {fileID: 219827393}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: -15945.25}
+  m_LocalPosition: {x: 0, y: 0, z: -47835.75}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -625,7 +625,7 @@ Transform:
   m_GameObject: {fileID: 1352825028}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 4871.1533, y: -356.03625, z: 4101.892}
+  m_LocalPosition: {x: 14613.4599, y: -1068.10875, z: 12305.676}
   m_LocalScale: {x: 0.01, y: 0.015, z: 0.01}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -726,7 +726,7 @@ Transform:
   m_GameObject: {fileID: 1811391196}
   serializedVersion: 2
   m_LocalRotation: {x: 0.32525972, y: -0.31646103, z: -0.64905596, w: 0.61056113}
-  m_LocalPosition: {x: 4871.315, y: -356.0396, z: 4101.7925}
+  m_LocalPosition: {x: 14613.945, y: -1068.1188, z: 12305.3775}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
@@ -840,7 +840,7 @@ Transform:
   m_GameObject: {fileID: 1967676025}
   serializedVersion: 2
   m_LocalRotation: {x: 0.4680039, y: 0, z: -0.55577254, w: 0.6870876}
-  m_LocalPosition: {x: 4867, y: -372, z: 4120}
+  m_LocalPosition: {x: 14601, y: -1116, z: 12360}
   m_LocalScale: {x: 0.05, y: 0.005, z: 0.05}
   m_ConstrainProportionsScale: 0
   m_Children: []

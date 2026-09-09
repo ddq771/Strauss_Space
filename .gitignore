@@ -20,6 +20,7 @@
 .idea/
 *.csproj
 *.sln
+*.slnx
 *.userprefs
 *.pidb
 *.booproj

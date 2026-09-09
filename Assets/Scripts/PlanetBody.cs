@@ -11,7 +11,7 @@ public sealed class PlanetBody : MonoBehaviour
     public const double UniversalGravitationalConstant = 6.67430e-11;
 
     [Min(0.01f)]
-    [SerializeField] private float radius = 6_378_100f;
+    [SerializeField] private float radius = 19_134_300f;
 
     [Min(0.001f)]
     [SerializeField] private float mass = 5.9722e24f;
@@ -21,7 +21,7 @@ public sealed class PlanetBody : MonoBehaviour
 
     [Tooltip("Maximum distance at which this planet applies gravity. Set to 0 for no cutoff.")]
     [Min(0f)]
-    [SerializeField] private float gravityInfluenceRadius = 10_000_000f;
+    [SerializeField] private float gravityInfluenceRadius = 30_000_000f;
 
     [SerializeField] private LayerMask affectedLayers = ~0;
 
@@ -145,7 +145,16 @@ public sealed class PlanetBody : MonoBehaviour
         // supplies the physical surface for the rocket.
         sphereCollider.enabled = false;
         body.detectCollisions = false;
-        body.mass = mass;
+        // Do not assign the planet's real-world mass (up to ~6e24 kg) to the
+        // PhysX Rigidbody: with no active collider to derive mass properties
+        // from, PhysX's automatic center-of-mass/inertia-tensor computation
+        // produces NaN, which surfaces as "Expanding invalid MinMaxAABB"
+        // spam. This field is unused elsewhere; gravity uses the `mass`
+        // field directly via GetGravityAcceleration.
+        body.automaticCenterOfMass = false;
+        body.automaticInertiaTensor = false;
+        body.centerOfMass = Vector3.zero;
+        body.inertiaTensor = Vector3.one;
     }
 
     private static bool IsFinite(Vector3 value)
