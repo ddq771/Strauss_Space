@@ -11,7 +11,7 @@ public sealed class PlanetBody : MonoBehaviour
     public const double UniversalGravitationalConstant = 6.67430e-11;
 
     [Min(0.01f)]
-    [SerializeField] private float radius = 19_134_300f;
+    [SerializeField] private float radius = 6_378_100f;
 
     [Min(0.001f)]
     [SerializeField] private float mass = 5.9722e24f;
@@ -21,9 +21,19 @@ public sealed class PlanetBody : MonoBehaviour
 
     [Tooltip("Maximum distance at which this planet applies gravity. Set to 0 for no cutoff.")]
     [Min(0f)]
-    [SerializeField] private float gravityInfluenceRadius = 30_000_000f;
+    [SerializeField] private float gravityInfluenceRadius = 10_000_000f;
 
     [SerializeField] private LayerMask affectedLayers = ~0;
+
+    [Header("Mesh")]
+    [Tooltip("Unity's built-in sphere primitive is a fixed, visibly faceted low-poly mesh. " +
+             "This generates a smoother UV sphere instead, so the surface still reads as " +
+             "round up close (e.g. the Kenya launch camera) and not just from orbit.")]
+    [Range(8, 256)]
+    [SerializeField] private int longitudeSegments = 96;
+
+    [Range(4, 128)]
+    [SerializeField] private int latitudeSegments = 48;
 
     public float Radius => radius;
     public float Mass => mass;
@@ -52,6 +62,10 @@ public sealed class PlanetBody : MonoBehaviour
 
     private SphereCollider sphereCollider;
     private Rigidbody body;
+    private MeshFilter meshFilter;
+    private Mesh generatedMesh;
+    private int generatedLongitudeSegments = -1;
+    private int generatedLatitudeSegments = -1;
     private readonly HashSet<Rigidbody> affectedBodies = new();
 
     private void Reset()
@@ -155,6 +169,101 @@ public sealed class PlanetBody : MonoBehaviour
         body.automaticInertiaTensor = false;
         body.centerOfMass = Vector3.zero;
         body.inertiaTensor = Vector3.one;
+
+        ApplySmoothMesh();
+    }
+
+    private void ApplySmoothMesh()
+    {
+        meshFilter ??= GetComponent<MeshFilter>();
+        if (meshFilter == null)
+        {
+            return;
+        }
+
+        longitudeSegments = Mathf.Clamp(longitudeSegments, 8, 256);
+        latitudeSegments = Mathf.Clamp(latitudeSegments, 4, 128);
+
+        if (generatedMesh != null &&
+            generatedLongitudeSegments == longitudeSegments &&
+            generatedLatitudeSegments == latitudeSegments)
+        {
+            return;
+        }
+
+        generatedMesh = BuildUvSphere(longitudeSegments, latitudeSegments, radius: 0.5f);
+        generatedMesh.name = $"PlanetSphere_{longitudeSegments}x{latitudeSegments}";
+        generatedLongitudeSegments = longitudeSegments;
+        generatedLatitudeSegments = latitudeSegments;
+        meshFilter.sharedMesh = generatedMesh;
+    }
+
+    /// <summary>
+    /// Builds a smooth UV sphere (equirectangular UVs, matching how the stock
+    /// primitive sphere is textured) at the given resolution. Unity's built-in
+    /// sphere is a fixed, coarse mesh that shows visible flat facets once the
+    /// planet is large and the camera gets close to the surface; this lets the
+    /// resolution scale with how round the planet needs to look.
+    /// </summary>
+    private static Mesh BuildUvSphere(int longitudeSegments, int latitudeSegments, float radius)
+    {
+        var mesh = new Mesh();
+        var vertexCount = (longitudeSegments + 1) * (latitudeSegments + 1);
+        mesh.indexFormat = vertexCount > 65000
+            ? UnityEngine.Rendering.IndexFormat.UInt32
+            : UnityEngine.Rendering.IndexFormat.UInt16;
+
+        var vertices = new List<Vector3>(vertexCount);
+        var normals = new List<Vector3>(vertexCount);
+        var uvs = new List<Vector2>(vertexCount);
+
+        for (var lat = 0; lat <= latitudeSegments; lat++)
+        {
+            var v = (float)lat / latitudeSegments;
+            var theta = v * Mathf.PI; // 0 at the north pole, PI at the south pole.
+            var sinTheta = Mathf.Sin(theta);
+            var cosTheta = Mathf.Cos(theta);
+
+            for (var lon = 0; lon <= longitudeSegments; lon++)
+            {
+                var u = (float)lon / longitudeSegments;
+                var phi = u * Mathf.PI * 2f;
+                var sinPhi = Mathf.Sin(phi);
+                var cosPhi = Mathf.Cos(phi);
+
+                var normal = new Vector3(sinTheta * cosPhi, cosTheta, sinTheta * sinPhi);
+                vertices.Add(normal * radius);
+                normals.Add(normal);
+                uvs.Add(new Vector2(u, 1f - v));
+            }
+        }
+
+        var triangles = new List<int>(longitudeSegments * latitudeSegments * 6);
+        var stride = longitudeSegments + 1;
+        for (var lat = 0; lat < latitudeSegments; lat++)
+        {
+            for (var lon = 0; lon < longitudeSegments; lon++)
+            {
+                var a = lat * stride + lon;
+                var b = a + stride;
+
+                triangles.Add(a);
+                triangles.Add(b);
+                triangles.Add(a + 1);
+
+                triangles.Add(a + 1);
+                triangles.Add(b);
+                triangles.Add(b + 1);
+            }
+        }
+
+        mesh.SetVertices(vertices);
+        mesh.SetNormals(normals);
+        mesh.SetUVs(0, uvs);
+        mesh.SetTriangles(triangles, 0);
+        mesh.RecalculateBounds();
+        mesh.RecalculateTangents();
+        return mesh;
     }
 
     private static bool IsFinite(Vector3 value)

@@ -237,7 +237,9 @@ public static class PlanetSceneSetup
     {
         var rocket = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
         rocket.name = "Rocket";
-        rocket.transform.localScale = new Vector3(10f, 15f, 10f) * PlanetBody.WorldUnitsPerMeter;
+        // Rocket.BuildVisual() replaces the primitive's own mesh with a
+        // generated nose-cone/body/engine hull sized from its own serialized
+        // fields (metres), so no manual transform scale is needed here.
         rocket.AddComponent<Rocket>();
         return rocket;
     }
