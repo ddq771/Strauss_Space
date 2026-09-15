@@ -38,3 +38,13 @@ crashlytics-build.properties
 
 # Local launcher shortcut
 *.desktop
+
+# Checkout metadata, local backups and generated diagnostic output
+.git-data/
+Assets/Scenes/LocalBackups/
+Assets/Scenes/LocalBackups.meta
+ProjectSettings/Packages/com.unity.ai.assistant/
+Reports/*.log
+Reports/*.backup
+ArtSource/**/*.log
+__pycache__/

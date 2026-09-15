@@ -37,3 +37,6 @@ The project-local tools folder contains Unity Hub 3.19.5 and Unity Editor 6000.3
 
 
 ТОЖЕ ТЕКСТ da
+
+
+Просто текст

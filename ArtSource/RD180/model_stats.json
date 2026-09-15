@@ -1,0 +1,11 @@
+{
+  "triangles": 78488,
+  "mesh_objects": 7,
+  "materials": 7,
+  "bounds_m": {
+    "x": 3.106,
+    "y": 1.5702,
+    "z": 3.5881
+  },
+  "note": "Visual approximation; pipework and dimensions are not measured."
+}

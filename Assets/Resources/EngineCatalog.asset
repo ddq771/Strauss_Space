@@ -1,0 +1,40 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8d81c081b2d4ece159c01634b997a2fa, type: 3}
+  m_Name: EngineCatalog
+  m_EditorClassIdentifier: Assembly-CSharp::EngineCatalog
+  engines:
+  - id: F1
+    title: F-1
+    prefab: {fileID: 7970571873145514631, guid: 681e2b868ddd8991bbc6ef41ae3bd029, type: 3}
+    height: 5.6359997
+    diameter: 3.8043478
+  - id: RD180
+    title: RD-180
+    prefab: {fileID: 3302522902106722494, guid: 7abbddd9b5a2119a592e9d92b07f717d, type: 3}
+    height: 3.579
+    diameter: 3.106
+  - id: RS25
+    title: RS-25
+    prefab: {fileID: 7564721849216610120, guid: c2ba46eea9b9bbd48a3ca496220f34e4, type: 3}
+    height: 4.191
+    diameter: 2.4998274
+  - id: Merlin1D
+    title: Merlin 1D
+    prefab: {fileID: 7250772516272738050, guid: 86e700da53429778b98523a5915d4ddc, type: 3}
+    height: 2.901
+    diameter: 1.1257204
+  - id: Raptor2
+    title: Raptor 2
+    prefab: {fileID: 6407767367858412156, guid: 96eb35f51ec1870418c63b184f9a8a1c, type: 3}
+    height: 3.331
+    diameter: 1.370534

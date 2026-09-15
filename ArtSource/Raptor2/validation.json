@@ -1,0 +1,12 @@
+{
+  "fbx_roundtrip": "passed",
+  "mesh_objects": 6,
+  "bounds_m": [
+    1.3705340027809143,
+    1.344146966934204,
+    3.331000357219466
+  ],
+  "markers": "mount and exhaust verified",
+  "normals": "inner bell inward",
+  "unity_editor_import": "not tested"
+}

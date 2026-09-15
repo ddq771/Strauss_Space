@@ -1,0 +1,12 @@
+{
+  "fbx_roundtrip": "passed",
+  "mesh_objects": 7,
+  "bounds_metres_blender_xyz": [
+    3.1059999465942383,
+    1.570176601409912,
+    3.5880549317225814
+  ],
+  "two_exhaust_markers": true,
+  "inner_bell_normals": "inward",
+  "unity_editor_import": "not tested"
+}

@@ -199,8 +199,8 @@ public sealed class PlanetBody : MonoBehaviour
     }
 
     /// <summary>
-    /// Builds a smooth UV sphere (equirectangular UVs, matching how the stock
-    /// primitive sphere is textured) at the given resolution. Unity's built-in
+    /// Builds an outward-facing UV sphere with Greenwich at texture U=0.5,
+    /// matching GetSurfaceNormal's longitude convention. Unity's built-in
     /// sphere is a fixed, coarse mesh that shows visible flat facets once the
     /// planet is large and the camera gets close to the surface; this lets the
     /// resolution scale with how round the planet needs to look.
@@ -234,7 +234,7 @@ public sealed class PlanetBody : MonoBehaviour
                 var normal = new Vector3(sinTheta * cosPhi, cosTheta, sinTheta * sinPhi);
                 vertices.Add(normal * radius);
                 normals.Add(normal);
-                uvs.Add(new Vector2(u, 1f - v));
+                uvs.Add(new Vector2(u + .5f, 1f - v));
             }
         }
 
@@ -248,12 +248,12 @@ public sealed class PlanetBody : MonoBehaviour
                 var b = a + stride;
 
                 triangles.Add(a);
-                triangles.Add(b);
                 triangles.Add(a + 1);
+                triangles.Add(b);
 
                 triangles.Add(a + 1);
-                triangles.Add(b);
                 triangles.Add(b + 1);
+                triangles.Add(b);
             }
         }
 

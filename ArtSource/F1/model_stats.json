@@ -1,0 +1,11 @@
+{
+  "triangles": 106000,
+  "mesh_objects": 5,
+  "materials": 5,
+  "bounds_m": {
+    "x": 3.8043,
+    "y": 3.8043,
+    "z": 5.634
+  },
+  "note": "Approximate visual model; dimensions and details are not measured."
+}

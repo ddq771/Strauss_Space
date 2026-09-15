@@ -6,7 +6,8 @@ public sealed class Rocket : MonoBehaviour
 {
     private const float StandardGravity = 9.80665f;
 
-    [Header("Mass (kg)")]
+    [Header("Base structure mass (kg)")]
+    [Tooltip("Structural mass excluding separately modeled engines, tanks, frame and propellants.")]
     [Min(0.001f)]
     [SerializeField] private float dryMass = 10_000f;
 
@@ -55,18 +56,22 @@ public sealed class Rocket : MonoBehaviour
     [Range(8, 64)]
     [SerializeField] private int hullSegments = 24;
 
-    public float DryMass => dryMass;
-    public float FuelMass => fuelMass;
-    public float CurrentMass => dryMass + fuelMass;
+    public float StructuralMass => dryMass;
+    public bool Launched => launchClampReleased;
+    public float DryMass => GetComponent<RocketFlightModel>() is RocketFlightModel flight ? (float)flight.DryMass : dryMass;
+    public float FuelMass => GetComponent<RocketFlightModel>() is RocketFlightModel flight ? flight.FuelRemaining+flight.OxidizerRemaining : fuelMass;
+    public float CurrentMass => DryMass + FuelMass;
     public float MaxThrust => maxThrust;
     public float SpecificImpulse => specificImpulse;
     public float Throttle => throttle;
     public bool EngineEnabled => engineEnabled;
     public float LaunchLatitudeDegrees => launchLatitudeDegrees;
     public float LaunchLongitudeDegrees => launchLongitudeDegrees;
+    public float AssemblyMountLocalY =>
+        (engineHeight - (bodyHeight + noseHeight + engineHeight) * .5f) * PlanetBody.WorldUnitsPerMeter;
 
     private Rigidbody body;
-    private bool launchClampReleased;
+    [SerializeField, HideInInspector] private bool launchClampReleased;
 
     private Material hullMaterial;
     private Material engineMaterial;
@@ -102,6 +107,8 @@ public sealed class Rocket : MonoBehaviour
                 launchLongitudeDegrees,
                 clearance: 25f);
 
+            PlaceOnAssemblyMount();
+
             body.linearVelocity = Vector3.zero;
             body.angularVelocity = Vector3.zero;
             EnsureLaunchPlatformCollider();
@@ -135,6 +142,15 @@ public sealed class Rocket : MonoBehaviour
         box.center = Vector3.zero;
         box.size = new Vector3(1f, 2f, 1f);
         box.enabled = true;
+    }
+
+    public void PlaceOnAssemblyMount()
+    {
+        var mount = GameObject.Find("Rocket Assembly Root");
+        if (mount == null) return;
+        var halfHeight = (bodyHeight + noseHeight + engineHeight) * .5f * PlanetBody.WorldUnitsPerMeter;
+        transform.SetPositionAndRotation(mount.transform.position + mount.transform.up * halfHeight,
+            mount.transform.rotation);
     }
 
     private void OnValidate()
@@ -188,13 +204,22 @@ public sealed class Rocket : MonoBehaviour
             return;
         }
 
+        var flight=GetComponent<RocketFlightModel>();
+        if(flight!=null)
+        {
+            if(engineEnabled && throttle>0)flight.Step(body,throttle,Time.fixedDeltaTime);
+            return;
+        }
         if (!engineEnabled || throttle <= 0f || fuelMass <= 0f)
         {
             return;
         }
 
         var thrust = maxThrust * throttle;
-        body.AddForce(transform.up * thrust, ForceMode.Force);
+        var assembly=GetComponent<RocketAssemblyController>();
+        if(assembly!=null && assembly.enabled && assembly.InstalledCount==0)return;
+        var direction=assembly!=null && assembly.enabled ? assembly.ResultantThrustDirection : transform.up;
+        body.AddForce(direction * thrust * PlanetBody.WorldUnitsPerMeter, ForceMode.Force);
 
         // mdot = F / (Isp * g0), using SI units: kg/s.
         var fuelUsed = thrust / (specificImpulse * StandardGravity) * Time.fixedDeltaTime;
@@ -209,12 +234,21 @@ public sealed class Rocket : MonoBehaviour
 
     public void StartEngine(float requestedThrottle = 1f)
     {
+        var assembly=GetComponent<RocketAssemblyController>();
+        if(assembly!=null && assembly.enabled && assembly.InstalledCount==0)return;
         throttle = Mathf.Clamp01(requestedThrottle);
-        engineEnabled = throttle > 0f && fuelMass > 0f;
+        var flight=GetComponent<RocketFlightModel>();
+        engineEnabled = throttle > 0f && (flight!=null?flight.Prepare(throttle):fuelMass>0f);
         if (engineEnabled && !launchClampReleased)
         {
             SetLaunchClamp(false);
         }
+    }
+
+    public void ReturnToAssembly()
+    {
+        StopEngine();SetLaunchClamp(true);
+        GetComponent<RocketFlightModel>()?.Refill();
     }
 
     public void StopEngine()
@@ -287,7 +321,8 @@ public sealed class Rocket : MonoBehaviour
         specificImpulse = Mathf.Max(0.01f, specificImpulse);
         throttle = Mathf.Clamp01(throttle);
         body.useGravity = false;
-        body.mass = CurrentMass;
+        var flight=GetComponent<RocketFlightModel>();
+        body.mass = flight!=null && flight.TotalMass>0 ? (float)flight.TotalMass : dryMass+fuelMass;
     }
 
     /// <summary>

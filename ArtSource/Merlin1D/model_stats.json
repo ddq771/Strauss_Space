@@ -1,0 +1,11 @@
+{
+  "triangles": 64336,
+  "mesh_objects": 6,
+  "materials": 6,
+  "bounds_m": {
+    "x": 1.1257,
+    "y": 0.954,
+    "z": 2.901
+  },
+  "note": "Visual approximation; proportions, piping and fittings are approximate."
+}
