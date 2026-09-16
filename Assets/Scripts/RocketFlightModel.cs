@@ -9,6 +9,10 @@ public sealed class RocketFlightModel : MonoBehaviour
     [SerializeField] private bool tanksInitialized;
     [SerializeField] private string fuelType="RP-1";
     [SerializeField] private float initialFill=1;
+    [Tooltip("Drag coefficient used to slow the rocket through the atmosphere. " +
+             "Tuned for a felt, gradual slowdown on ascent/descent rather than " +
+             "to match a real vehicle's measured Cd.")]
+    [SerializeField] private float dragCoefficient=0.5f;
     private RocketAssemblyController assembly;
     private Rocket rocket;
     private PlanetBody planet;
@@ -36,6 +40,7 @@ public sealed class RocketFlightModel : MonoBehaviour
         }
     }
     public double Pressure {get;private set;}
+    public double Drag {get;private set;}
     public double Thrust {get;private set;}
     public double FuelFlow {get;private set;}
     public double OxidizerFlow {get;private set;}
@@ -118,12 +123,47 @@ public sealed class RocketFlightModel : MonoBehaviour
             body.inertiaTensorRotation=Quaternion.identity;
         }
     }
+    // Explicit isothermal Earth atmosphere approximation: pressure decays
+    // exponentially with altitude (scale height 8500 m, sea-level 101325 Pa).
+    // Called every physics step (not just while the engine is running) so
+    // Pressure/Drag telemetry stays live while coasting or falling, too.
+    private void UpdateAtmosphere()
+    {
+        Pressure=planet!=null?101325*Math.Exp(-Altitude/8500):0;
+    }
+
+    /// <summary>
+    /// Applies aerodynamic drag opposing the rocket's velocity, scaled by air
+    /// density (from Pressure via the ideal gas law at a fixed reference
+    /// temperature) and speed squared. This is a deliberately simple model -
+    /// a single drag coefficient and the body's own cross-section, no
+    /// separate centre of pressure - tuned to give a felt, gradual slowdown
+    /// through the thick lower atmosphere rather than to match a real
+    /// vehicle's flight data.
+    /// </summary>
+    private void ApplyDrag(Rigidbody body)
+    {
+        UpdateAtmosphere();
+        if(Pressure<=0){Drag=0;return;}
+        var velocity=body.linearVelocity/PlanetBody.WorldUnitsPerMeter;
+        var speed=velocity.magnitude;
+        if(speed<0.05f){Drag=0;return;}
+        // Ideal gas law at a fixed reference temperature (288.15 K, standard
+        // sea-level) - consistent with the isothermal pressure model above.
+        var density=Pressure/(287.05*288.15);
+        var capsule=GetComponent<CapsuleCollider>();
+        var radius=capsule!=null?capsule.radius/PlanetBody.WorldUnitsPerMeter:1.85f;
+        var area=Math.PI*radius*radius;
+        Drag=0.5*density*speed*speed*dragCoefficient*area;
+        var direction=-velocity/speed;
+        body.AddForce(direction*(float)(Drag*PlanetBody.WorldUnitsPerMeter),ForceMode.Force);
+    }
+
     public bool Prepare(double throttle)
     {
         if(crashed){Thrust=0;FuelFlow=0;OxidizerFlow=0;Status="Impact — vehicle destroyed. Return to assembly to rebuild.";return false;}
         Bind();if(!tanksInitialized)Refill();UpdateMass();Thrust=0;FuelFlow=0;OxidizerFlow=0;
-        // Explicit isothermal Earth atmosphere approximation. No aerodynamic drag model yet.
-        Pressure=planet!=null?101325*Math.Exp(-Altitude/8500):0;
+        UpdateAtmosphere();
         if(assembly.InstalledCount==0){Status="Install an engine first.";return false;}
         if(assembly.FuelTank==null || assembly.OxidizerTank==null){Status="Both propellant tanks are required.";return false;}
         if(fuelRemaining<=0 || oxidizerRemaining<=0){Status="Propellant depleted.";return false;}
@@ -160,6 +200,10 @@ public sealed class RocketFlightModel : MonoBehaviour
     {
         Bind();
         if(crashed || !rocket.Launched || planet==null){trackingImpact=false;return;}
+        // Applied every physics step regardless of engine state, so drag
+        // keeps slowing the rocket while coasting or falling, not just
+        // during powered flight (Step() only runs with the engine firing).
+        ApplyDrag(GetComponent<Rigidbody>());
         var current=transform.position;
         if(!trackingImpact){previousPosition=current;trackingImpact=true;}
         var center=planet.transform.position;

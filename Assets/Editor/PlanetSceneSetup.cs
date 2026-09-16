@@ -17,6 +17,7 @@ public static class PlanetSceneSetup
         var planet = GameObject.CreatePrimitive(PrimitiveType.Sphere);
         planet.name = "Planet";
         planet.AddComponent<PlanetBody>();
+        planet.AddComponent<Atmosphere>();
 
         var cameraObject = new GameObject("Main Camera");
         cameraObject.tag = "MainCamera";
@@ -167,7 +168,10 @@ public static class PlanetSceneSetup
         var launchCamera = launchCameraObject.GetComponent<Camera>();
         launchCamera.fieldOfView = 60f;
         launchCamera.nearClipPlane = 0.01f;
-        launchCamera.farClipPlane = 2000f;
+        // Wide enough to keep the atmosphere shell (visible near the horizon
+        // at a grazing angle, out to sqrt(shellRadius^2 - planetRadius^2)*2)
+        // from being cut off by the far clip plane.
+        launchCamera.farClipPlane = 8000f;
 
         var currentMainCamera = GameObject.FindWithTag("MainCamera");
         if (currentMainCamera != null && currentMainCamera != launchCameraObject)
@@ -211,6 +215,7 @@ public static class PlanetSceneSetup
         var planet = GameObject.CreatePrimitive(PrimitiveType.Sphere);
         planet.name = "Planet";
         planet.AddComponent<PlanetBody>();
+        planet.AddComponent<Atmosphere>();
 
         var cameraObject = new GameObject("Main Camera");
         cameraObject.tag = "MainCamera";

@@ -203,9 +203,11 @@ public sealed class PlanetBody : MonoBehaviour
     /// matching GetSurfaceNormal's longitude convention. Unity's built-in
     /// sphere is a fixed, coarse mesh that shows visible flat facets once the
     /// planet is large and the camera gets close to the surface; this lets the
-    /// resolution scale with how round the planet needs to look.
+    /// resolution scale with how round the planet needs to look. Internal
+    /// (not private) so Atmosphere can build its shell from the same
+    /// generator instead of duplicating it.
     /// </summary>
-    private static Mesh BuildUvSphere(int longitudeSegments, int latitudeSegments, float radius)
+    internal static Mesh BuildUvSphere(int longitudeSegments, int latitudeSegments, float radius)
     {
         var mesh = new Mesh();
         var vertexCount = (longitudeSegments + 1) * (latitudeSegments + 1);

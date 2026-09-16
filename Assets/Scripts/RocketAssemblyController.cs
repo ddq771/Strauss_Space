@@ -24,6 +24,8 @@ public sealed class RocketAssemblyController : MonoBehaviour
 
     private RocketFlightModel flight;
     private float commandedThrottle=1;
+    // Seconds to ramp from 0% to 100% throttle while Shift/Ctrl is held.
+    private const float ThrottleRampPerSecond=1f;
     private bool showFormulas;
     private int editingSlot=-1;
     private string massInput,thrustInput,ispInput,diameterInput,ratioInput;
@@ -188,11 +190,18 @@ public sealed class RocketAssemblyController : MonoBehaviour
         GUILayout.Label("FLIGHT CONTROLS");
         if(mountFrame!=null && mountFrame.CanGimbal)
         {
-            GUILayout.Label("Up/Down: Pitch. Left/Right: Yaw. Release to center.",new GUIStyle(GUI.skin.label){wordWrap=true});
+            GUILayout.Label("Up/Down or W/S: Pitch. Left/Right or A/D: Yaw. Release to center.",new GUIStyle(GUI.skin.label){wordWrap=true});
             DrawGimbalIndicator("Pitch",flightGimbal.x);
             DrawGimbalIndicator("Yaw",flightGimbal.y);
             GUILayout.Label(flightGimbal.sqrMagnitude<.0001f?"Gimbals centered":"Gimbals deflected");
         }
+        else
+        {
+            GUILayout.Label("This frame is fixed - no pitch/yaw steering. Return to assembly and " +
+                "enable \"Allow gimballed mounting\" on the frame to steer.",
+                new GUIStyle(GUI.skin.label){wordWrap=true});
+        }
+        GUILayout.Label("Shift/Ctrl: throttle up/down. Z: full throttle. X: cut throttle. Space: toggle ignition.",new GUIStyle(GUI.skin.label){wordWrap=true});
         GUILayout.Label("Throttle: "+(commandedThrottle*100).ToString("F0")+"%");
         commandedThrottle=GUILayout.HorizontalSlider(commandedThrottle,.01f,1);
         if(rocket.EngineEnabled)rocket.SetThrottle(commandedThrottle);
@@ -206,12 +215,13 @@ public sealed class RocketAssemblyController : MonoBehaviour
         GUILayout.Label("Speed: "+flight.Speed.ToString("F1")+" m/s · Pressure: "+(flight.Pressure/1000).ToString("F1")+" kPa");
         GUILayout.Label(new GUIContent("Vertical speed: "+flight.VerticalSpeed.ToString("+0.0;-0.0;0.0")+" m/s", "Radial velocity relative to the planet: positive ascending, negative descending."));
         GUILayout.Label("Horizontal speed: "+flight.HorizontalSpeed.ToString("F1")+" m/s");
+        GUILayout.Label(new GUIContent("Drag: "+(flight.Drag/1000).ToString("F1")+" kN", "Aerodynamic drag opposing velocity; falls off with altitude as the air thins."));
         GUILayout.Label("Fuel: "+flight.FuelRemaining.ToString("F1")+" kg ("+flight.FuelType+")");
         GUILayout.Label("LOX: "+flight.OxidizerRemaining.ToString("F1")+" kg");
         GUILayout.Label("Flow: "+flight.FuelFlow.ToString("F2")+" + "+flight.OxidizerFlow.ToString("F2")+" kg/s");
         GUILayout.Label(flight.Status,new GUIStyle(GUI.skin.label){wordWrap=true});
         showFormulas=GUILayout.Toggle(showFormulas,"Show formulas");
-        if(showFormulas)GUILayout.Label("A = sum(pi × D² / 4)\nF = throttle × Fvac − p × A\nFlow = throttle × Fvac / (g0 × IspVac)\nFuel flow = Flow / (1 + O/F)\nLOX flow = Flow − Fuel flow\nTWR = total thrust / (vehicle mass × local gravity)\nGravity = G × planet mass / distance²\nForce direction = mount orientation\nTorque = offset from COM × force\nAltitude = max(0, distance to planet center − planet radius) [m]\nAtmosphere: p = 101325 × exp(−altitude / 8500)\nLinear throttle; attached-flow approximation.",new GUIStyle(GUI.skin.label){wordWrap=true});
+        if(showFormulas)GUILayout.Label("A = sum(pi × D² / 4)\nF = throttle × Fvac − p × A\nFlow = throttle × Fvac / (g0 × IspVac)\nFuel flow = Flow / (1 + O/F)\nLOX flow = Flow − Fuel flow\nTWR = total thrust / (vehicle mass × local gravity)\nGravity = G × planet mass / distance²\nForce direction = mount orientation\nTorque = offset from COM × force\nAltitude = max(0, distance to planet center − planet radius) [m]\nAtmosphere: p = 101325 × exp(−altitude / 8500)\nAir density = p / (287.05 × 288.15)\nDrag = 0.5 × density × speed² × Cd × body cross-section, opposing velocity\nLinear throttle; attached-flow approximation.",new GUIStyle(GUI.skin.label){wordWrap=true});
         GUILayout.Space(10);
     }
 
@@ -434,28 +444,74 @@ public sealed class RocketAssemblyController : MonoBehaviour
         var input=Vector2.zero;
         if(Application.isFocused && GUIUtility.keyboardControl==0)
         {
-            input.x=(Input.GetKey(KeyCode.UpArrow)?1f:0f)-(Input.GetKey(KeyCode.DownArrow)?1f:0f);
-            input.y=(Input.GetKey(KeyCode.LeftArrow)?1f:0f)-(Input.GetKey(KeyCode.RightArrow)?1f:0f);
+            input.x=((Input.GetKey(KeyCode.UpArrow)||Input.GetKey(KeyCode.W))?1f:0f)-((Input.GetKey(KeyCode.DownArrow)||Input.GetKey(KeyCode.S))?1f:0f);
+            input.y=((Input.GetKey(KeyCode.LeftArrow)||Input.GetKey(KeyCode.A))?1f:0f)-((Input.GetKey(KeyCode.RightArrow)||Input.GetKey(KeyCode.D))?1f:0f);
         }
         var desired=Vector2.ClampMagnitude(input,1f)*RocketMountFrame.PreviewAngleLimit;
         flightGimbal=Vector2.MoveTowards(flightGimbal,desired,20f*Time.deltaTime);
         for(var i=0;i<SocketCount;i++)
         {
             var parameters=GetParameters(i);
-            mountFrame.SetAngle(i,parameters!=null && parameters.allowGimbal?flightGimbal:Vector2.zero);
+            // A gimballed engine below the centre of mass swings the nose the
+            // OPPOSITE way from its own tilt - same reason real rocket TVC
+            // steers by kicking the tail away from the turn. Feeding
+            // flightGimbal straight into the mount tilted the engine toward
+            // the key pressed, so the nose swung backwards from what W/S/A/D
+            // suggest. Negate it here so the commanded direction matches the
+            // nose's actual response, not the engine's.
+            mountFrame.SetAngle(i,parameters!=null && parameters.allowGimbal?-flightGimbal:Vector2.zero);
         }
     }
 
     private void Update()
     {
         if(rocket==null || catalog==null)return;
-        if(rocket.Launched){UpdateFlightGimbals();return;}
+        if(rocket.Launched)
+        {
+            UpdateFlightGimbals();
+            UpdateFlightThrottle();
+            return;
+        }
         flightGimbal=Vector2.zero;
         if(Input.GetKeyDown(KeyCode.Delete) && GUIUtility.keyboardControl==0)DeleteSelection();
+        if(HandleEngineToggleKey())return;
         if(!Input.GetMouseButtonDown(0) || IsPointerOverPanel())return;
         GUIUtility.keyboardControl=0;
         var camera=view!=null?view.GetComponent<Camera>():Camera.main;if(camera==null)return;
         SelectAtRay(camera.ScreenPointToRay(Input.mousePosition),camera.farClipPlane);
+    }
+
+    // Space toggles ignition at the current commanded throttle - the keyboard
+    // equivalent of the Launch/Shutdown buttons, usable both to ignite from
+    // the pad and to re-light mid-flight after a shutdown.
+    private bool HandleEngineToggleKey()
+    {
+        if(!Application.isFocused || GUIUtility.keyboardControl!=0 || !Input.GetKeyDown(KeyCode.Space))return false;
+        if(rocket.EngineEnabled)rocket.StopEngine();
+        else
+        {
+            rocket.StartEngine(commandedThrottle);
+            if(!rocket.Launched)notice=flight.Status;
+        }
+        return true;
+    }
+
+    // KSP-style throttle keys: hold Shift/Ctrl to ramp, Z for full throttle,
+    // X to cut it. commandedThrottle is the same field the GUI slider reads
+    // and writes, so the slider and keyboard always agree on the value.
+    private void UpdateFlightThrottle()
+    {
+        HandleEngineToggleKey();
+        if(!Application.isFocused || GUIUtility.keyboardControl!=0)return;
+        if(Input.GetKeyDown(KeyCode.Z))commandedThrottle=1f;
+        else if(Input.GetKeyDown(KeyCode.X))commandedThrottle=0f;
+        else
+        {
+            var up=Input.GetKey(KeyCode.LeftShift)||Input.GetKey(KeyCode.RightShift);
+            var down=Input.GetKey(KeyCode.LeftControl)||Input.GetKey(KeyCode.RightControl);
+            if(up!=down)commandedThrottle=Mathf.Clamp01(commandedThrottle+(up?1f:-1f)*ThrottleRampPerSecond*Time.deltaTime);
+        }
+        if(rocket.EngineEnabled)rocket.SetThrottle(commandedThrottle);
     }
 
     public void SelectAtRay(Ray ray,float maxDistance)
@@ -648,6 +704,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
             return;
         }
         GUILayout.Label("ROCKET COMPONENTS");
+        GUILayout.Label("Space also launches at the current throttle.",new GUIStyle(GUI.skin.label){wordWrap=true});
         if(GUILayout.Button("Launch",GUILayout.Height(34)))
         {
             rocket.StartEngine(commandedThrottle);

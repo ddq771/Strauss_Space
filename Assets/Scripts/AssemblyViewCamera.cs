@@ -114,15 +114,53 @@ public sealed class AssemblyViewCamera : MonoBehaviour
         {
             var center = transform.parent.InverseTransformPoint(planet.transform.position);
             focus = Vector3.Lerp(target, center, Mathf.InverseLerp(2000000f, 16000000f, distance));
-            RenderSettings.fog = distance < 2000f;
+
+            // distance is the camera's zoom/orbit distance from its focus
+            // point (metres) - while tracking a launched rocket, the camera
+            // stays zoomed in close to it, so distance alone stops
+            // reflecting how far the view actually is from the ground once
+            // the rocket climbs. Without this, a rocket at real space
+            // altitude still renders with ground-level fog and a solid-color
+            // sky, because the camera never zoomed itself out. Blend in the
+            // rocket's own altitude so leaving the atmosphere reads as
+            // leaving it even at a tight camera zoom.
+            var groundProximity = distance;
+            var trackedRocket = FindFirstObjectByType<Rocket>();
+            if (trackedRocket != null && trackedRocket.Launched)
+            {
+                var flightModel = trackedRocket.GetComponent<RocketFlightModel>();
+                if (flightModel != null)
+                    groundProximity = Mathf.Max(groundProximity, (float)flightModel.Altitude);
+            }
+
+            RenderSettings.fog = groundProximity < 2000f;
             RenderSettings.fogMode = FogMode.Linear;
             RenderSettings.fogColor = new Color(.67f, .79f, .86f);
-            RenderSettings.fogStartDistance = Mathf.Max(140f, distance * 2f) * scale;
-            RenderSettings.fogEndDistance = Mathf.Max(500f, distance * 8f) * scale;
+            RenderSettings.fogStartDistance = Mathf.Max(140f, groundProximity * 2f) * scale;
+            RenderSettings.fogEndDistance = Mathf.Max(500f, groundProximity * 8f) * scale;
             var camera = GetComponent<Camera>();
-            camera.clearFlags = distance < 2000f ? CameraClearFlags.SolidColor : CameraClearFlags.Skybox;
-            camera.nearClipPlane = Mathf.Clamp(distance * .00001f, .05f, 20000f) * scale;
-            camera.farClipPlane = Mathf.Max(distance * 3f, planet.Radius * 4f) * scale;
+            camera.clearFlags = groundProximity < 2000f ? CameraClearFlags.SolidColor : CameraClearFlags.Skybox;
+
+            // Far clip must reach whatever is actually visible: the ground
+            // horizon from the current altitude while flying/orbiting close
+            // in, or the whole planet once truly zoomed out to the orbital
+            // view. The previous formula unconditionally floored it at
+            // planet-scale (4x the radius) regardless of how close the
+            // camera actually was, while the near clip stayed pinned to a
+            // tiny value for close-up assembly work - together that produced
+            // a near:far ratio in the hundreds of billions, far beyond what
+            // a depth buffer can resolve. That read as glitchy, torn ground
+            // once a tracked rocket climbed a few tens of km, and as the
+            // planet disappearing outright by around 100 km, even though
+            // nothing was actually being clipped out of view.
+            var horizonMeters = Mathf.Sqrt(Mathf.Max(0f,
+                (planet.Radius + groundProximity) * (planet.Radius + groundProximity) -
+                planet.Radius * planet.Radius));
+            var neededFarMeters = Mathf.Max(distance * 3f, (groundProximity + horizonMeters) * 1.5f);
+            camera.farClipPlane = Mathf.Min(neededFarMeters, planet.Radius * 4f) * scale;
+            camera.nearClipPlane = Mathf.Max(
+                Mathf.Clamp(distance * .00001f, .05f, 20000f) * scale,
+                camera.farClipPlane * .00001f);
         }
         // The curved local terrain is only a precision-friendly site patch.
         // Hide it before its finite circular edge can enter the frame; at this
