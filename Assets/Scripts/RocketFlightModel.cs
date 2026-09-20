@@ -13,6 +13,10 @@ public sealed class RocketFlightModel : MonoBehaviour
              "Tuned for a felt, gradual slowdown on ascent/descent rather than " +
              "to match a real vehicle's measured Cd.")]
     [SerializeField] private float dragCoefficient=0.5f;
+    // RocketPreset selection sets this per real vehicle (Starship's blunt
+    // hull drags far more than Falcon 9's slender one); the sandbox default
+    // above is used for anything built by hand.
+    public void SetDragCoefficient(float value)=>dragCoefficient=Mathf.Max(0.01f,value);
     private RocketAssemblyController assembly;
     private Rocket rocket;
     private PlanetBody planet;

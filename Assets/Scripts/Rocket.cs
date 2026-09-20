@@ -56,6 +56,11 @@ public sealed class Rocket : MonoBehaviour
     [Range(8, 64)]
     [SerializeField] private int hullSegments = 24;
 
+    [Tooltip("Body/nose color. Presets (RocketPresets) use this to tell " +
+             "otherwise-identically-shaped hulls apart at a glance - " +
+             "Starship's bare steel vs. Falcon 9's white, for instance.")]
+    [SerializeField] private Color hullColor = new(0.85f, 0.86f, 0.88f);
+
     public float StructuralMass => dryMass;
     public bool Launched => launchClampReleased;
     public float DryMass => GetComponent<RocketFlightModel>() is RocketFlightModel flight ? (float)flight.DryMass : dryMass;
@@ -80,6 +85,8 @@ public sealed class Rocket : MonoBehaviour
     private float builtNoseHeight = -1f;
     private float builtEngineHeight = -1f;
     private int builtHullSegments = -1;
+    private GameObject importedBody;
+    private string builtBodyModelKey;
 
     private void Reset()
     {
@@ -142,6 +149,70 @@ public sealed class Rocket : MonoBehaviour
         box.center = Vector3.zero;
         box.size = new Vector3(1f, 2f, 1f);
         box.enabled = true;
+    }
+
+    /// <summary>
+    /// Used by RocketPreset selection to give a real vehicle its own body
+    /// size and color instead of the sandbox default shape. Rebuilds the
+    /// hull immediately so the change is visible without waiting for the
+    /// next OnValidate/Awake pass.
+    /// </summary>
+    public void ConfigureShape(float diameter,float height,float nose,float engineSkirt,Color color)
+    {
+        bodyDiameter=diameter;bodyHeight=height;noseHeight=nose;engineHeight=engineSkirt;hullColor=color;
+        BuildVisual();
+    }
+
+    /// <summary>
+    /// Swaps the generated nose/body/engine hull for an imported model from
+    /// Assets/Resources/RocketBodies (built procedurally in Blender - see
+    /// ArtSource/*/build_*.py - not a licensed/downloaded asset), or back to
+    /// the generated hull when key is null/empty. The collider still comes
+    /// from ConfigureShape's dimensions either way - only the visual swaps.
+    /// </summary>
+    public void SetBodyModel(string key)
+    {
+        if (builtBodyModelKey == key) return;
+        builtBodyModelKey = key;
+
+        if (importedBody != null)
+        {
+            if (Application.isPlaying) Destroy(importedBody);
+            else DestroyImmediate(importedBody);
+            importedBody = null;
+        }
+
+        var useGeneratedHull = string.IsNullOrEmpty(key);
+        foreach (var partName in new[] { "Engine", "Body", "NoseCone" })
+        {
+            var part = transform.Find(partName);
+            if (part != null) part.gameObject.SetActive(useGeneratedHull);
+        }
+        if (useGeneratedHull) return;
+
+        var prefab = Resources.Load<GameObject>("RocketBodies/" + key);
+        if (prefab == null)
+        {
+            Debug.LogWarning("No body model found for '" + key + "' - keeping the generated hull.", this);
+            builtBodyModelKey = null;
+            foreach (var partName in new[] { "Engine", "Body", "NoseCone" })
+            {
+                var part = transform.Find(partName);
+                if (part != null) part.gameObject.SetActive(true);
+            }
+            return;
+        }
+
+        var wrapper = new GameObject("Imported Body");
+        wrapper.transform.SetParent(transform, worldPositionStays: false);
+        wrapper.transform.localPosition = Vector3.zero;
+        wrapper.transform.localRotation = Quaternion.identity;
+        // The model is authored in real metres (Blender export); the rest
+        // of the scene is kilometres - same scale-down every other
+        // generated/imported piece in this project applies.
+        wrapper.transform.localScale = Vector3.one * PlanetBody.WorldUnitsPerMeter;
+        importedBody = Instantiate(prefab, wrapper.transform, false);
+        importedBody.name = key;
     }
 
     public void PlaceOnAssemblyMount()
@@ -364,15 +435,16 @@ public sealed class Rocket : MonoBehaviour
         capsule.radius = (bodyDiameter * 0.5f) * PlanetBody.WorldUnitsPerMeter;
         capsule.height = totalHeight * PlanetBody.WorldUnitsPerMeter;
 
+        hullMaterial ??= CreateUnlitStandardMaterial(hullColor, 0.6f);
+        engineMaterial ??= CreateUnlitStandardMaterial(new Color(0.12f, 0.12f, 0.13f), 0.3f);
+        hullMaterial.color = hullColor;
+
         if (builtBodyDiameter == bodyDiameter && builtBodyHeight == bodyHeight &&
             builtNoseHeight == noseHeight && builtEngineHeight == engineHeight &&
             builtHullSegments == hullSegments)
         {
             return;
         }
-
-        hullMaterial ??= CreateUnlitStandardMaterial(new Color(0.85f, 0.86f, 0.88f), 0.6f);
-        engineMaterial ??= CreateUnlitStandardMaterial(new Color(0.12f, 0.12f, 0.13f), 0.3f);
 
         var radius = (bodyDiameter * 0.5f) * PlanetBody.WorldUnitsPerMeter;
         var engineHeightUnits = engineHeight * PlanetBody.WorldUnitsPerMeter;
@@ -436,7 +508,11 @@ public sealed class Rocket : MonoBehaviour
         renderer.sharedMaterial = material;
     }
 
-    private static Material CreateUnlitStandardMaterial(Color color, float smoothness)
+    /// <summary>
+    /// Not private: ProceduralEngine reuses this for the Vostok-family
+    /// engine visual instead of duplicating the same Standard-shader setup.
+    /// </summary>
+    internal static Material CreateUnlitStandardMaterial(Color color, float smoothness)
     {
         var material = new Material(Shader.Find("Standard"))
         {
@@ -450,9 +526,10 @@ public sealed class Rocket : MonoBehaviour
     /// <summary>
     /// Builds a tapered tube (a cylinder when bottomRadius equals topRadius,
     /// a cone when topRadius is 0) from local Y 0 to Y height, capped on
-    /// whichever end has a non-zero radius.
+    /// whichever end has a non-zero radius. Not private: ProceduralEngine
+    /// reuses this for the Vostok-family engine bell/chamber shapes.
     /// </summary>
-    private static Mesh BuildFrustum(float bottomRadius, float topRadius, float height, int segments)
+    internal static Mesh BuildFrustum(float bottomRadius, float topRadius, float height, int segments)
     {
         var mesh = new Mesh();
         var stride = segments + 1;

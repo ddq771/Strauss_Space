@@ -7,6 +7,11 @@ using UnityEngine;
 [RequireComponent(typeof(Rocket))]
 public sealed class RocketAssemblyController : MonoBehaviour
 {
+    // Raised from 7 to fit Starship's full-stack engine count (33 on Super
+    // Heavy + 6 on Ship = 39) as a real preset. Sandbox socket-count buttons
+    // still stop at 7; presets are the only path to a higher count.
+    public const int MaxSockets = 40;
+
     [Serializable] public class Layout
     {
         public int sockets = 1;
@@ -17,9 +22,9 @@ public sealed class RocketAssemblyController : MonoBehaviour
         public bool fuelInstalled = true, oxidizerInstalled = true;
         public float fuelCapacity = 100f, oxidizerCapacity = 180f;
         public float fuelDiameter = 3.7f, oxidizerDiameter = 3.7f;
-        public Vector2[] angles = new Vector2[7];
-        public string[] engineIds = new string[7];
-        public EngineParameters[] parameters = new EngineParameters[7];
+        public Vector2[] angles = new Vector2[MaxSockets];
+        public string[] engineIds = new string[MaxSockets];
+        public EngineParameters[] parameters = new EngineParameters[MaxSockets];
     }
 
     private RocketFlightModel flight;
@@ -35,6 +40,16 @@ public sealed class RocketAssemblyController : MonoBehaviour
     private AssemblyViewCamera view;
     [SerializeField, HideInInspector] private Transform cluster;
     [SerializeField, HideInInspector] private Layout layout = new Layout();
+    // Set by LoadPreset when a real vehicle (RocketPresets) is selected -
+    // hides the sandbox editing UI so the fixed configuration cannot be
+    // changed piece by piece, per the request that presets be non-editable.
+    [SerializeField, HideInInspector] private bool locked;
+    [SerializeField, HideInInspector] private string activePresetName;
+    // An imported body model already IS the rocket's outer surface - the
+    // schematic tank cylinders that normally show through the generated
+    // hull would just poke through/duplicate it, so they're hidden (not
+    // removed - propellant mass/capacity tracking is unaffected either way).
+    [SerializeField, HideInInspector] private string activeBodyModelKey;
     private readonly Stack<string> undo = new Stack<string>();
     private readonly List<Transform> sockets = new List<Transform>();
     [SerializeField, HideInInspector] private Material frameMaterial, fuelMaterial, oxidizerMaterial;
@@ -114,7 +129,11 @@ public sealed class RocketAssemblyController : MonoBehaviour
         if(surfaceFrame!=null)foreach(var collider in surfaceFrame.GetComponentsInChildren<Collider>())collider.contactOffset=.00002f;
         flight=GetComponent<RocketFlightModel>();
         if(flight==null)flight=gameObject.AddComponent<RocketFlightModel>();
-        if(layout.parameters==null || layout.parameters.Length!=7)layout.parameters=new EngineParameters[7];
+        // A scene saved before MaxSockets grew from 7 still has shorter
+        // arrays - grow them in place instead of discarding saved data.
+        GrowToMaxSockets(ref layout.parameters);
+        GrowToMaxSockets(ref layout.engineIds);
+        GrowToMaxSockets(ref layout.angles);
         if(catalog==null || catalog.engines==null || catalog.engines.Length==0)
         { notice="Engine catalog not found."; enabled=false; return; }
         if(frameMaterial==null)frameMaterial=new Material(Shader.Find("Standard")) {color=new Color(.24f,.29f,.33f)};
@@ -267,9 +286,19 @@ public sealed class RocketAssemblyController : MonoBehaviour
     private void Remember()
     { undo.Push(JsonUtility.ToJson(layout)); }
 
+    private static void GrowToMaxSockets<T>(ref T[] array)
+    {
+        if(array!=null && array.Length==MaxSockets)return;
+        var grown=new T[MaxSockets];
+        if(array!=null)Array.Copy(array,grown,Mathf.Min(array.Length,MaxSockets));
+        array=grown;
+    }
+
     public void SetSocketCount(int count)
     {
-        if(count!=1 && count!=3 && count!=5 && count!=7)throw new ArgumentOutOfRangeException(nameof(count));
+        // The sandbox UI only offers 1/3/5/7, but presets (Falcon 9's 9,
+        // Starship's 39) need the full range up to MaxSockets.
+        if(count<1 || count>MaxSockets)throw new ArgumentOutOfRangeException(nameof(count));
         if(layout.sockets==count)return;
         Remember();
         layout.sockets=count;
@@ -312,6 +341,51 @@ public sealed class RocketAssemblyController : MonoBehaviour
     public string GetEngineId(int socket) => layout.engineIds[socket];
     public Vector3 GetSocketPosition(int index) => sockets[index].position;
 
+    private readonly struct Ring { public readonly float radius; public readonly int count;
+        public Ring(float radius,int count){this.radius=radius;this.count=count;} }
+
+    /// <summary>
+    /// Splits `remaining` engines across as many concentric rings as needed
+    /// around a centre engine. Each ring's radius is the larger of (a) what
+    /// even angular spacing needs for its own population, at the given
+    /// engine-to-engine clearance, or (b) enough room past the previous
+    /// ring's radius that the two rings' engines cannot overlap radially.
+    /// Ring capacity grows by 6 per ring outward (8, 14, 20, ...) - matches
+    /// Falcon 9's real 8-engine octaweb ring exactly, and gives large
+    /// presets like Starship's 39-engine cluster a plausible multi-ring
+    /// spread rather than one absurdly wide ring.
+    /// </summary>
+    private static List<Ring> PlanRings(int remaining,float spacing)
+    {
+        var rings=new List<Ring>();
+        var previousRadius=0f;
+        var ringIndex=0;
+        while(remaining>0)
+        {
+            var capacity=8+6*ringIndex;
+            var count=Mathf.Min(remaining,capacity);
+            var evenSpacingRadius=spacing/(2f*Mathf.Sin(Mathf.PI/count));
+            var radius=Mathf.Max(evenSpacingRadius,previousRadius+spacing);
+            rings.Add(new Ring(radius,count));
+            previousRadius=radius;
+            remaining-=count;
+            ringIndex++;
+        }
+        return rings;
+    }
+
+    private static void FindRingSlot(List<Ring> rings,int indexAmongRingEngines,out float radius,out int indexOnRing,out int countOnRing)
+    {
+        var offset=indexAmongRingEngines;
+        foreach(var ring in rings)
+        {
+            if(offset<ring.count){radius=ring.radius;indexOnRing=offset;countOnRing=ring.count;return;}
+            offset-=ring.count;
+        }
+        // Unreachable as long as callers only index within SocketCount-1.
+        radius=rings.Count>0?rings[^1].radius:0f;indexOnRing=0;countOnRing=1;
+    }
+
     private void Rebuild()
     {
         if(cluster!=null) { cluster.gameObject.SetActive(false); Destroy(cluster.gameObject); }
@@ -334,9 +408,14 @@ public sealed class RocketAssemblyController : MonoBehaviour
         }
         // Clearance for any permitted gimbal angle, even with unlike engines.
         var spacing=largestDiameter+.25f+(layout.gimballed ? 2*lowestEngine*Mathf.Sin(RocketMountFrame.PreviewAngleLimit*Mathf.Deg2Rad) : 0);
-        var ringRadius=layout.sockets==1 ? 0 : spacing;
-        if(layout.sockets==3)ringRadius=spacing/Mathf.Sqrt(3);
-        footprint=Mathf.Max(3.7f,2*ringRadius+largestDiameter);
+        // sockets==3 keeps its own layout (a triangle, no centre engine) -
+        // everything else is a centre engine plus however many concentric
+        // rings it takes to fit the rest without any engine overlapping its
+        // neighbours (needed once presets go past the 7-socket sandbox cap,
+        // e.g. Starship's 39-engine cluster).
+        var ringPlan= layout.sockets==3 ? null : PlanRings(layout.sockets-1,spacing);
+        var outerRadius = layout.sockets==3 ? spacing/Mathf.Sqrt(3) : (ringPlan.Count>0 ? ringPlan[^1].radius : 0f);
+        footprint=Mathf.Max(3.7f,2*outerRadius+largestDiameter);
         if(layout.frameInstalled)Beam("Central Mount",Vector3.zero,new Vector3(0,-.25f,0),1.4f);
         for(var i=0;i<SocketCount;i++)
         {
@@ -344,9 +423,11 @@ public sealed class RocketAssemblyController : MonoBehaviour
             var onRing=layout.sockets==3 || i>0;
             if(onRing)
             {
-                var ringCount=layout.sockets==3?3:layout.sockets-1;
-                var angle=(layout.sockets==3?i:i-1)*2*Mathf.PI/ringCount;
-                p+=new Vector3(Mathf.Cos(angle),0,Mathf.Sin(angle))*ringRadius;
+                float radius; int indexOnRing, countOnRing;
+                if(layout.sockets==3){radius=outerRadius;indexOnRing=i;countOnRing=3;}
+                else FindRingSlot(ringPlan,i-1,out radius,out indexOnRing,out countOnRing);
+                var angle=indexOnRing*2*Mathf.PI/countOnRing;
+                p+=new Vector3(Mathf.Cos(angle),0,Mathf.Sin(angle))*radius;
             }
             var socket=new GameObject("Mount "+(i+1)).transform;
             socket.SetParent(cluster,false); socket.localPosition=p;
@@ -485,9 +566,11 @@ public sealed class RocketAssemblyController : MonoBehaviour
             return;
         }
         flightGimbal=Vector2.zero;
-        if(Input.GetKeyDown(KeyCode.Delete) && GUIUtility.keyboardControl==0)DeleteSelection();
+        if(Input.GetKeyDown(KeyCode.Delete) && GUIUtility.keyboardControl==0 && !locked)DeleteSelection();
         if(HandleEngineToggleKey())return;
-        if(!Input.GetMouseButtonDown(0) || IsPointerOverPanel())return;
+        // A locked preset can still be launched (above) but its parts
+        // cannot be clicked, selected or swapped in the 3D view.
+        if(locked || !Input.GetMouseButtonDown(0) || IsPointerOverPanel())return;
         GUIUtility.keyboardControl=0;
         var camera=view!=null?view.GetComponent<Camera>():Camera.main;if(camera==null)return;
         SelectAtRay(camera.ScreenPointToRay(Input.mousePosition),camera.farClipPlane);
@@ -563,12 +646,14 @@ public sealed class RocketAssemblyController : MonoBehaviour
         {
             if(!File.Exists(path ?? SavePath)){notice="No saved assembly found.";return;}
             var loaded=JsonUtility.FromJson<Layout>(File.ReadAllText(path ?? SavePath));
-            if(loaded==null || loaded.engineIds==null || loaded.engineIds.Length!=7 ||
-               (loaded.sockets!=1 && loaded.sockets!=3 && loaded.sockets!=5 && loaded.sockets!=7))
+            // Saves from before MaxSockets grew past 7 are still valid -
+            // grow their arrays in place rather than rejecting the file.
+            if(loaded==null || loaded.engineIds==null || loaded.engineIds.Length<1 || loaded.engineIds.Length>MaxSockets ||
+               loaded.sockets<1 || loaded.sockets>MaxSockets || loaded.sockets>loaded.engineIds.Length)
                 throw new InvalidDataException("Invalid assembly file format.");
             foreach(var id in loaded.engineIds)
                 if(!string.IsNullOrEmpty(id) && FindEngine(id)==null)throw new InvalidDataException("Unknown engine.");
-            if(loaded.angles==null || loaded.angles.Length!=7 ||
+            if(loaded.angles==null || loaded.angles.Length!=loaded.engineIds.Length ||
                !ProceduralPropellantTank.ValidDimensions(loaded.fuelCapacity,loaded.fuelDiameter) ||
                !ProceduralPropellantTank.ValidDimensions(loaded.oxidizerCapacity,loaded.oxidizerDiameter))
                 throw new InvalidDataException("Invalid component parameters.");
@@ -576,8 +661,11 @@ public sealed class RocketAssemblyController : MonoBehaviour
                 throw new InvalidDataException("Invalid mount angle.");
             if(loaded.fuelType!="RP-1" && loaded.fuelType!="LH2" && loaded.fuelType!="Methane")throw new InvalidDataException("Invalid propellant type.");
             if(float.IsNaN(loaded.fillFraction)||loaded.fillFraction<0||loaded.fillFraction>1)throw new InvalidDataException("Invalid fill fraction.");
-            if(loaded.parameters==null)loaded.parameters=new EngineParameters[7];
-            if(loaded.parameters.Length!=7)throw new InvalidDataException("Invalid engine parameters.");
+            if(loaded.parameters==null)loaded.parameters=new EngineParameters[loaded.engineIds.Length];
+            if(loaded.parameters.Length!=loaded.engineIds.Length)throw new InvalidDataException("Invalid engine parameters.");
+            GrowToMaxSockets(ref loaded.engineIds);
+            GrowToMaxSockets(ref loaded.angles);
+            GrowToMaxSockets(ref loaded.parameters);
             for(var i=0;i<loaded.parameters.Length;i++)
             {
                 // JsonUtility materializes null array entries as empty objects.
@@ -595,6 +683,87 @@ public sealed class RocketAssemblyController : MonoBehaviour
             Remember();layout=loaded;selectedSocket=0;editingSlot=-1;SyncFields();Rebuild();notice="Assembly loaded.";
         }
         catch(Exception e){notice="Could not load assembly: "+e.Message;}
+    }
+
+    public string ActivePresetName => activePresetName;
+    public bool IsLocked => locked;
+
+    // Fuel/oxidizer tanks are visually the biggest part of the rocket (the
+    // hull is mostly hidden behind/around them) and normally use a fixed
+    // orange/light-blue schematic color pair so they're easy to tell apart
+    // while hand-building. A preset instead paints the whole vehicle one
+    // real color, like the actual rockets it's approximating.
+    private static readonly Color DefaultFuelColor=new(.88f,.65f,.28f);
+    private static readonly Color DefaultOxidizerColor=new(.55f,.78f,.88f);
+    private void SetTankColors(Color fuel,Color oxidizer)
+    {
+        if(fuelMaterial!=null)fuelMaterial.color=fuel;
+        if(oxidizerMaterial!=null)oxidizerMaterial.color=oxidizer;
+    }
+
+    /// <summary>
+    /// Configures the assembly to match a real vehicle (RocketPresets) and
+    /// locks the sandbox editing UI - see the class doc comment on
+    /// RocketPresets for exactly what is and isn't a faithful match.
+    /// </summary>
+    public void LoadPreset(int index)
+    {
+        if(rocket.Launched || index<0 || index>=RocketPresets.All.Length)return;
+        var preset=RocketPresets.All[index];
+        undo.Clear();
+        // Clear every slot first - switching directly from one preset (or a
+        // sandbox build) to another must not leave stale engines behind in
+        // slots the new preset doesn't get around to overwriting, and must
+        // not leave the previous vehicle's fuel type in place while engines
+        // are installed one at a time (InstallEngine only auto-syncs fuel
+        // type from the *first* engine of an otherwise-empty assembly).
+        for(var i=0;i<MaxSockets;i++){layout.engineIds[i]=null;layout.parameters[i]=null;}
+        layout.frameInstalled=true;
+        layout.gimballed=true;
+        // Set before the install/tank loop below so its Rebuild() calls
+        // already hide the tank stack, instead of flashing it visible
+        // then hiding it once SetBodyModel runs at the end.
+        activeBodyModelKey=preset.bodyModelKey;
+        SetSocketCount(preset.engineCount);
+        for(var i=0;i<preset.engineCount;i++)InstallEngine(i,preset.engineId);
+        layout.fuelType=preset.fuelType;
+        flight.SetFuel(preset.fuelType);
+        SetTank(false,true,preset.fuelCapacity,preset.fuelDiameter);
+        SetTank(true,true,preset.oxidizerCapacity,preset.oxidizerDiameter);
+        flight.SetFill(1f);
+        rocket.ConfigureShape(preset.bodyDiameter,preset.bodyHeight,preset.noseHeight,preset.engineHeight,preset.hullColor);
+        rocket.SetBodyModel(preset.bodyModelKey);
+        // The imported model already looks like the real vehicle - the
+        // schematic tank recolor is only useful for the generated hull.
+        if(string.IsNullOrEmpty(preset.bodyModelKey))SetTankColors(preset.hullColor,preset.hullColor);
+        else SetTankColors(DefaultFuelColor,DefaultOxidizerColor);
+        flight.SetDragCoefficient(preset.dragCoefficient);
+        activePresetName=preset.name;
+        locked=true;
+        selectedSocket=0;
+        undo.Clear();
+        FocusRocket();
+        notice=preset.name+" loaded and locked. Use \"Custom build\" to return to the sandbox.";
+    }
+
+    /// <summary>Leaves a locked preset and resets to a blank sandbox assembly.</summary>
+    public void ExitPreset()
+    {
+        if(rocket.Launched || !locked)return;
+        locked=false;
+        activePresetName=null;
+        activeBodyModelKey=null;
+        undo.Clear();
+        layout=new Layout();
+        rocket.ConfigureShape(3.7f,35f,8f,4f,new Color(0.85f,0.86f,0.88f));
+        rocket.SetBodyModel(null);
+        SetTankColors(DefaultFuelColor,DefaultOxidizerColor);
+        flight.SetDragCoefficient(0.5f);
+        selectedSocket=0;
+        SyncFields();
+        Rebuild();
+        FocusRocket();
+        notice="Back to a blank custom assembly.";
     }
 
     public void SetFrame(bool installed,bool gimballed)
@@ -656,6 +825,8 @@ public sealed class RocketAssemblyController : MonoBehaviour
             capsule.radius=Mathf.Max(footprint,Mathf.Max(layout.fuelInstalled?layout.fuelDiameter:0,layout.oxidizerInstalled?layout.oxidizerDiameter:0))*.5f*PlanetBody.WorldUnitsPerMeter;
             capsule.height=(top-bottom)*PlanetBody.WorldUnitsPerMeter;
         }
+        var hideTanks=!string.IsNullOrEmpty(activeBodyModelKey);
+        foreach(var renderer in tankStack.GetComponentsInChildren<Renderer>(true))renderer.enabled=!hideTanks;
     }
 
     private ProceduralPropellantTank AddTank(bool oxidizer)
@@ -726,72 +897,95 @@ public sealed class RocketAssemblyController : MonoBehaviour
             GUIUtility.ExitGUI();
         }
         panelScroll=GUILayout.BeginScrollView(panelScroll);
-        category=GUILayout.Toolbar(category,new[]{"Engines","Frames","Tanks"});
-        if(category==0)
+        if(locked)
         {
-            for(var i=0;i<catalog.engines.Length;i++)
+            GUILayout.Label("REAL ROCKET: "+activePresetName.ToUpperInvariant());
+            GUILayout.Label("This is a fixed configuration - engines, tanks and body are locked. Use \"Custom build\" to edit an assembly by hand instead.",new GUIStyle(GUI.skin.label){wordWrap=true});
+            if(GUILayout.Button("Custom build",GUILayout.Height(32)))ExitPreset();
+        }
+        else
+        {
+            GUILayout.Label("REAL ROCKETS");
+            GUILayout.Label("Pick one for a fixed, realistic configuration, or build your own below.",new GUIStyle(GUI.skin.label){wordWrap=true});
+            for(var i=0;i<RocketPresets.All.Length;i++)
+                if(GUILayout.Button(RocketPresets.All[i].name,GUILayout.Height(30)))LoadPreset(i);
+            GUILayout.Space(12);
+            category=GUILayout.Toolbar(category,new[]{"Engines","Frames","Tanks"});
+            if(category==0)
             {
-                GUI.backgroundColor=i==selectedEngine ? new Color(.25f,.75f,1f) : Color.white;
-                if(GUILayout.Button(catalog.engines[i].title,GUILayout.Height(33))) {selectedEngine=i;FocusCluster();}
+                for(var i=0;i<catalog.engines.Length;i++)
+                {
+                    GUI.backgroundColor=i==selectedEngine ? new Color(.25f,.75f,1f) : Color.white;
+                    if(GUILayout.Button(catalog.engines[i].title,GUILayout.Height(33))) {selectedEngine=i;FocusCluster();}
+                }
+                GUI.backgroundColor=Color.white;
+                ParameterEditor();
+                GUILayout.Label("Select an engine → click an empty mount to install. Click a component to select it. Press Delete to remove it.",new GUIStyle(GUI.skin.label){wordWrap=true});
             }
-            GUI.backgroundColor=Color.white;
-            ParameterEditor();
-            GUILayout.Label("Select an engine → click an empty mount to install. Click a component to select it. Press Delete to remove it.",new GUIStyle(GUI.skin.label){wordWrap=true});
+            if(category==1)
+            {
+                if(GUILayout.Button("Install fixed frame",GUILayout.Height(32)))SetFrame(true,false);
+                if(GUILayout.Button("Install gimballed frame",GUILayout.Height(32)))SetFrame(true,true);
+                GUILayout.Label("Number of mounts"); GUILayout.BeginHorizontal();
+                foreach(var count in new[]{1,3,5,7})if(GUILayout.Button((layout.sockets==count?"• ":"")+count))SetSocketCount(count);
+                GUILayout.EndHorizontal();
+                GUILayout.Label("Each engine has its own mount. The frame expands to fit the engines.",new GUIStyle(GUI.skin.label){wordWrap=true});
+            }
+            if(category==2){
+                GUILayout.Label("Tank fuel");
+                foreach(var fuel in new[]{"RP-1","LH2","Methane"})if(GUILayout.Button((flight.FuelType==fuel?"• ":"")+fuel)){Remember();layout.fuelType=fuel;flight.SetFuel(fuel);}
+                GUILayout.Label("Initial fill: "+(flight.Fill*100).ToString("F0")+"%");
+                var fill=GUILayout.HorizontalSlider(flight.Fill,0,1);if(Mathf.Abs(fill-flight.Fill)>.001f){Remember();layout.fillFraction=fill;flight.SetFill(fill);}
+                TankEditor(false);TankEditor(true);GUILayout.Label("Capacity determines geometry. Remaining propellant is a separate quantity.",new GUIStyle(GUI.skin.label){wordWrap=true});}
+            GUILayout.Space(12);
         }
-        if(category==1)
-        {
-            if(GUILayout.Button("Install fixed frame",GUILayout.Height(32)))SetFrame(true,false);
-            if(GUILayout.Button("Install gimballed frame",GUILayout.Height(32)))SetFrame(true,true);
-            GUILayout.Label("Number of mounts"); GUILayout.BeginHorizontal();
-            foreach(var count in new[]{1,3,5,7})if(GUILayout.Button((layout.sockets==count?"• ":"")+count))SetSocketCount(count);
-            GUILayout.EndHorizontal();
-            GUILayout.Label("Each engine has its own mount. The frame expands to fit the engines.",new GUIStyle(GUI.skin.label){wordWrap=true});
-        }
-        if(category==2){
-            GUILayout.Label("Tank fuel");
-            foreach(var fuel in new[]{"RP-1","LH2","Methane"})if(GUILayout.Button((flight.FuelType==fuel?"• ":"")+fuel)){Remember();layout.fuelType=fuel;flight.SetFuel(fuel);}
-            GUILayout.Label("Initial fill: "+(flight.Fill*100).ToString("F0")+"%");
-            var fill=GUILayout.HorizontalSlider(flight.Fill,0,1);if(Mathf.Abs(fill-flight.Fill)>.001f){Remember();layout.fillFraction=fill;flight.SetFill(fill);}
-            TankEditor(false);TankEditor(true);GUILayout.Label("Capacity determines geometry. Remaining propellant is a separate quantity.",new GUIStyle(GUI.skin.label){wordWrap=true});}
-        GUILayout.Space(12);
         if(GUILayout.Button("Focus engines",GUILayout.Height(30)))FocusCluster();
         if(GUILayout.Button("Show entire rocket",GUILayout.Height(30)))FocusRocket();
-        GUILayout.BeginHorizontal();if(GUILayout.Button("Save"))SaveLayout();if(GUILayout.Button("Load"))LoadLayout();GUILayout.EndHorizontal();
-        if(GUILayout.Button("Undo change"))UndoChange();
+        if(!locked)
+        {
+            GUILayout.BeginHorizontal();if(GUILayout.Button("Save"))SaveLayout();if(GUILayout.Button("Load"))LoadLayout();GUILayout.EndHorizontal();
+            if(GUILayout.Button("Undo change"))UndoChange();
+        }
         GUILayout.Label(notice,new GUIStyle(GUI.skin.label){wordWrap=true});
         GUILayout.Space(12);
         GUILayout.Label("ASSEMBLY");
-        GUILayout.Label(selection!=null ? "Selected: "+selection.gameObject.name+" · Delete to remove" : "Click a component to select it.",new GUIStyle(GUI.skin.label){wordWrap=true});
+        if(!locked)
+        {
+            GUILayout.Label(selection!=null ? "Selected: "+selection.gameObject.name+" · Delete to remove" : "Click a component to select it.",new GUIStyle(GUI.skin.label){wordWrap=true});
+        }
         GUILayout.Label(!layout.frameInstalled?"No frame installed":layout.gimballed?"Gimballed frame":"Fixed frame");
         GUILayout.Label("Engines: "+InstalledCount+" / "+SocketCount);
-        for(var i=0;i<SocketCount;i++)
+        if(!locked)
         {
-            var entry=FindEngine(layout.engineIds[i]);
-            if(GUILayout.Button((selectedSocket==i?"▸ ":"")+(i+1)+". "+(entry?.title??"Empty"),GUILayout.Height(30)))
-            {selectedSocket=i;SelectEngine(i);}
-        }
-        if(layout.frameInstalled)
-        {
-            if(GUILayout.Button("Install in slot "+(selectedSocket+1),GUILayout.Height(32))){InstallEngine(selectedSocket,catalog.engines[selectedEngine].id);FocusCluster();}
-            if(layout.gimballed)
+            for(var i=0;i<SocketCount;i++)
             {
-                var angle=layout.angles[selectedSocket];
-                GUILayout.Label("Mount angle "+(selectedSocket+1)+" (max 10°)");
-                GUILayout.Label("Pitch: "+angle.x.ToString("F1")+"°");
-                var x=GUILayout.HorizontalSlider(angle.x,-10,10);
-                GUILayout.Label("Yaw: "+angle.y.ToString("F1")+"°");
-                var z=GUILayout.HorizontalSlider(angle.y,-10,10);
-                if(Mathf.Abs(x-angle.x)>.01f || Mathf.Abs(z-angle.y)>.01f)SetGimbal(selectedSocket,new Vector2(x,z));
-                if(GUILayout.Button("Reset engine angle"))SetGimbal(selectedSocket,Vector2.zero);
+                var entry=FindEngine(layout.engineIds[i]);
+                if(GUILayout.Button((selectedSocket==i?"▸ ":"")+(i+1)+". "+(entry?.title??"Empty"),GUILayout.Height(30)))
+                {selectedSocket=i;SelectEngine(i);}
+            }
+            if(layout.frameInstalled)
+            {
+                if(GUILayout.Button("Install in slot "+(selectedSocket+1),GUILayout.Height(32))){InstallEngine(selectedSocket,catalog.engines[selectedEngine].id);FocusCluster();}
+                if(layout.gimballed)
+                {
+                    var angle=layout.angles[selectedSocket];
+                    GUILayout.Label("Mount angle "+(selectedSocket+1)+" (max 10°)");
+                    GUILayout.Label("Pitch: "+angle.x.ToString("F1")+"°");
+                    var x=GUILayout.HorizontalSlider(angle.x,-10,10);
+                    GUILayout.Label("Yaw: "+angle.y.ToString("F1")+"°");
+                    var z=GUILayout.HorizontalSlider(angle.y,-10,10);
+                    if(Mathf.Abs(x-angle.x)>.01f || Mathf.Abs(z-angle.y)>.01f)SetGimbal(selectedSocket,new Vector2(x,z));
+                    if(GUILayout.Button("Reset engine angle"))SetGimbal(selectedSocket,Vector2.zero);
+                }
             }
         }
         GUILayout.Space(10);
         GUILayout.Label("Fuel: "+(FuelTank!=null?FuelTank.Capacity+" m³":"no tank"));
         GUILayout.Label("Oxidizer: "+(OxidizerTank!=null?OxidizerTank.Capacity+" m³":"no tank"));
-        GUILayout.Label("Physics prototype: constant propellant densities; no aerodynamic drag.",new GUIStyle(GUI.skin.label){wordWrap=true});
+        GUILayout.Label("Drag scales with altitude-based air density and speed squared; propellant densities are constant.",new GUIStyle(GUI.skin.label){wordWrap=true});
         GUILayout.EndScrollView();GUILayout.EndArea();
         var camera=view!=null ? view.GetComponent<Camera>() : Camera.main;
-        if(camera!=null && cluster!=null && Vector3.Distance(camera.transform.position,cluster.position)<.5f)
+        if(!locked && camera!=null && cluster!=null && Vector3.Distance(camera.transform.position,cluster.position)<.5f)
             for(var i=0;i<sockets.Count;i++)
             {
                 var p=camera.WorldToScreenPoint(sockets[i].position);if(p.z<=0)continue;

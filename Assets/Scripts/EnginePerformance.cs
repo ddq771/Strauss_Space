@@ -43,6 +43,13 @@ public static class EnginePerformance
             case "RS25":p=new EngineParameters{dryMass=3526.7f,vacuumThrust=2278824,vacuumIsp=452,mixtureRatio=6,fuel="LH2",minimumThrottle=.67f/1.09f,source="L3Harris RS-25 at 109% RPL; estimated throttle limit / calibrated area",dataStatus="Published reference / estimated limits and area"};p.exitDiameter=CalibratedDiameter(p.vacuumThrust,1859320,1);return p;
             case "Merlin1D":return new EngineParameters{dryMass=470,vacuumThrust=914000,vacuumIsp=311,exitDiameter=CalibratedDiameter(914000,845000,1),mixtureRatio=2.36f,minimumThrottle=.4f,source="Experimental preset anchored to SpaceX sea-level thrust; other inputs assumed",dataStatus="Estimated simulation preset"};
             case "Raptor2":return new EngineParameters{dryMass=1630,vacuumThrust=2394500,vacuumIsp=347,exitDiameter=1.3f,mixtureRatio=3.6f,minimumThrottle=.4f,fuel="Methane",source="Experimental DLR-style sea-level baseline; mass, Isp and throttle assumed",dataStatus="Estimated simulation preset"};
+            // RD-107 (R-7/Vostok strap-on/core family). Real hardware has 4
+            // main chambers plus 2 small vernier thrusters sharing one
+            // turbopump; verniers are omitted and nozzleCount=4 covers only
+            // the main chambers, the same simplification already used for
+            // RD-180's twin chambers above. No imported model exists for
+            // this one - see ProceduralEngine/EngineCatalogSetup.
+            case "RD107":p=new EngineParameters{dryMass=1250,vacuumThrust=1019700,vacuumIsp=315.6f,mixtureRatio=2.6f,nozzleCount=4,source="Astronautix RD-107 reference; verniers omitted",dataStatus="Published performance / simplified nozzle count"};p.exitDiameter=CalibratedDiameter(p.vacuumThrust,838500,4);return p;
             default:return null;
         }
     }

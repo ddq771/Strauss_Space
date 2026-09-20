@@ -1,0 +1,11 @@
+{
+  "triangles": 1500,
+  "mesh_objects": 3,
+  "materials": 3,
+  "bounds_m": {
+    "x": 11.1016,
+    "y": 13.75,
+    "z": 126.0
+  },
+  "note": "Visual approximation; proportions and details are approximate, not scaled CAD."
+}

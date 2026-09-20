@@ -55,6 +55,7 @@ public static class EngineCatalogSetup
             Debug.Log("ENGINE_CATALOG "+key+" height="+(-bounds.min.y)+" diameter="+Mathf.Max(bounds.size.x,bounds.size.z));
             UnityEngine.Object.DestroyImmediate(root);
         }
+        entries.Add(BuildProceduralEngine("RD107","RD-107"));
         var catalog=AssetDatabase.LoadAssetAtPath<EngineCatalog>("Assets/Resources/EngineCatalog.asset");
         if(catalog==null){catalog=ScriptableObject.CreateInstance<EngineCatalog>();AssetDatabase.CreateAsset(catalog,"Assets/Resources/EngineCatalog.asset");}
         catalog.engines=entries.ToArray();EditorUtility.SetDirty(catalog);AssetDatabase.SaveAssets();
@@ -64,5 +65,35 @@ public static class EngineCatalogSetup
         if(rocket.GetComponent<RocketAssemblyController>()==null)rocket.gameObject.AddComponent<RocketAssemblyController>();
         EditorSceneManager.SaveScene(scene);
         Debug.Log("COMPONENT_CATALOG_BUILD_PASSED");
+    }
+
+    /// <summary>
+    /// Builds a catalog entry from ProceduralEngine geometry instead of an
+    /// imported FBX, for engines (currently just RD-107, for Vostok) with no
+    /// model asset available. Dimensions approximate the real engine
+    /// package's overall envelope as one simplified bell shape - see
+    /// ProceduralEngine's own doc comment for what that simplifies away.
+    /// </summary>
+    private static EngineCatalog.Entry BuildProceduralEngine(string key,string title)
+    {
+        var root=new GameObject(key);
+        var engine=root.AddComponent<ProceduralEngine>();
+        var serialized=new SerializedObject(engine);
+        serialized.FindProperty("chamberDiameter").floatValue=0.9f;
+        serialized.FindProperty("chamberHeight").floatValue=0.9f;
+        serialized.FindProperty("nozzleExitDiameter").floatValue=1.5f;
+        serialized.FindProperty("nozzleHeight").floatValue=1.96f;
+        serialized.FindProperty("color").colorValue=new Color(0.34f,0.35f,0.37f);
+        serialized.ApplyModifiedPropertiesWithoutUndo();
+        var buildMethod=typeof(ProceduralEngine).GetMethod("BuildVisual",
+            System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance);
+        buildMethod.Invoke(engine,null);
+
+        var height=0.9f+1.96f;
+        var diameter=1.5f;
+        var prefab=PrefabUtility.SaveAsPrefabAsset(root,"Assets/Prefabs/Engines/"+key+".prefab");
+        Debug.Log("ENGINE_CATALOG "+key+" height="+height+" diameter="+diameter+" (procedural)");
+        UnityEngine.Object.DestroyImmediate(root);
+        return new EngineCatalog.Entry{id=key,title=title,prefab=prefab,height=height,diameter=diameter};
     }
 }

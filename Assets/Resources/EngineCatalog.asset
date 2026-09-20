@@ -38,3 +38,8 @@ MonoBehaviour:
     prefab: {fileID: 6407767367858412156, guid: 96eb35f51ec1870418c63b184f9a8a1c, type: 3}
     height: 3.331
     diameter: 1.370534
+  - id: RD107
+    title: RD-107
+    prefab: {fileID: 6431993176103420658, guid: 64275a877399f5db3b6bef2240b6787e, type: 3}
+    height: 2.8600001
+    diameter: 1.5

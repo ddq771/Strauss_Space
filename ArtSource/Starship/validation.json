@@ -1,0 +1,11 @@
+{
+  "fbx_roundtrip": "passed",
+  "mesh_objects": 3,
+  "bounds_m": [
+    11.10157585144043,
+    13.750009059906006,
+    126.0
+  ],
+  "height_check": "passed",
+  "unity_editor_import": "not tested"
+}
