@@ -18,6 +18,8 @@ public sealed class AssemblyViewCamera : MonoBehaviour
     [SerializeField, HideInInspector] private bool localSiteHidden;
     private Vector3 flightFocusOffset;
     private bool zoomInitialized;
+    private Rocket trackedRocket;
+    private GUIStyle rocketMarkerStyle;
 
     public void SetPlanet(PlanetBody value) => planet = value;
 
@@ -85,6 +87,83 @@ public sealed class AssemblyViewCamera : MonoBehaviour
                 rocket.transform.TransformVector(flightFocusOffset*PlanetBody.WorldUnitsPerMeter));
         }
         ApplyPose();
+    }
+
+    private void DrawRocketMarker()
+    {
+        if (Event.current.type != EventType.Repaint || !GetComponent<Camera>().enabled) return;
+        if (trackedRocket == null) trackedRocket = FindFirstObjectByType<Rocket>();
+        if (trackedRocket == null || !trackedRocket.Launched) return;
+
+        var camera = GetComponent<Camera>();
+        var rocketPosition = trackedRocket.transform.position;
+        var viewport = camera.WorldToViewportPoint(rocketPosition);
+        if (float.IsNaN(viewport.x) || float.IsNaN(viewport.y) || float.IsNaN(viewport.z)) return;
+
+        // Measure the visible rocket body, rather than using camera zoom as a proxy.
+        var renderers = trackedRocket.GetComponentsInChildren<Renderer>();
+        var hasBounds = false;
+        var bounds = new Bounds(rocketPosition, Vector3.zero);
+        foreach (var renderer in renderers)
+        {
+            if (!renderer.enabled || !renderer.gameObject.activeInHierarchy) continue;
+            if (!hasBounds) { bounds = renderer.bounds; hasBounds = true; }
+            else bounds.Encapsulate(renderer.bounds);
+        }
+        var sizePixels = 0f;
+        if (hasBounds && viewport.z > 0f)
+        {
+            var diameter = Mathf.Max(bounds.size.x, bounds.size.y, bounds.size.z);
+            if (camera.orthographic)
+                sizePixels = diameter * camera.pixelHeight / (2f * camera.orthographicSize);
+            else
+                sizePixels = diameter * camera.pixelHeight /
+                    (2f * viewport.z * Mathf.Tan(camera.fieldOfView * Mathf.Deg2Rad * 0.5f));
+        }
+        var offScreen = viewport.z <= 0f || viewport.x < 0f || viewport.x > 1f ||
+                        viewport.y < 0f || viewport.y > 1f;
+        if (!offScreen && sizePixels >= 32f) return;
+
+        if (rocketMarkerStyle == null)
+        {
+            rocketMarkerStyle = new GUIStyle(GUI.skin.label)
+            {
+                alignment = TextAnchor.MiddleLeft,
+                fontStyle = FontStyle.Bold,
+                fontSize = 14
+            };
+            rocketMarkerStyle.normal.textColor = new Color(1f, 0.28f, 0.25f);
+        }
+
+        // GUI coordinates start at the top left. Keep the marker inside the view.
+        var x = viewport.z > 0f ? viewport.x * Screen.width : (1f - viewport.x) * Screen.width;
+        var y = viewport.z > 0f ? (1f - viewport.y) * Screen.height : viewport.y * Screen.height;
+        x = Mathf.Clamp(x, 26f, Screen.width - 26f);
+        y = Mathf.Clamp(y, 20f, Screen.height - 20f);
+        var oldColor = GUI.color;
+        GUI.color = new Color(1f, 0.12f, 0.1f, 1f);
+        // An outline keeps the point visible without covering the planet.
+        GUI.DrawTexture(new Rect(x - 22f, y - 15f, 44f, 2f), Texture2D.whiteTexture);
+        GUI.DrawTexture(new Rect(x - 22f, y + 13f, 44f, 2f), Texture2D.whiteTexture);
+        GUI.DrawTexture(new Rect(x - 22f, y - 15f, 2f, 30f), Texture2D.whiteTexture);
+        GUI.DrawTexture(new Rect(x + 20f, y - 15f, 2f, 30f), Texture2D.whiteTexture);
+
+        var labelOnRight = x + 130f < Screen.width;
+        var lineStart = new Vector2(x + (labelOnRight ? 22f : -22f), y - 15f);
+        var lineEnd = new Vector2(x + (labelOnRight ? 62f : -62f), y - 34f);
+        DrawMarkerLine(lineStart, lineEnd);
+        GUI.color = oldColor;
+        var labelX = labelOnRight ? lineEnd.x + 4f : lineEnd.x - 68f;
+        GUI.Label(new Rect(labelX, lineEnd.y - 12f, 66f, 24f), "Rocket", rocketMarkerStyle);
+    }
+
+    private static void DrawMarkerLine(Vector2 start, Vector2 end)
+    {
+        var delta = end - start;
+        var oldMatrix = GUI.matrix;
+        GUIUtility.RotateAroundPivot(Mathf.Atan2(delta.y, delta.x) * Mathf.Rad2Deg, start);
+        GUI.DrawTexture(new Rect(start.x, start.y, delta.magnitude, 2f), Texture2D.whiteTexture);
+        GUI.matrix = oldMatrix;
     }
 
     private void PanFocus(Vector2 mouseDelta)
@@ -242,5 +321,6 @@ public sealed class AssemblyViewCamera : MonoBehaviour
                 desiredDistance=90f;
             }
         }
+        DrawRocketMarker();
     }
 }

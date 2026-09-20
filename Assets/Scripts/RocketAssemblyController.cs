@@ -24,6 +24,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
 
     private RocketFlightModel flight;
     private float commandedThrottle=1;
+    private static readonly float[] FlightSpeeds = { 1f, 2f, 5f, 10f };
     // Seconds to ramp from 0% to 100% throttle while Shift/Ctrl is held.
     private const float ThrottleRampPerSecond=1f;
     private bool showFormulas;
@@ -204,11 +205,22 @@ public sealed class RocketAssemblyController : MonoBehaviour
         GUILayout.Label("Shift/Ctrl: throttle up/down. Z: full throttle. X: cut throttle. Space: toggle ignition.",new GUIStyle(GUI.skin.label){wordWrap=true});
         GUILayout.Label("Throttle: "+(commandedThrottle*100).ToString("F0")+"%");
         commandedThrottle=GUILayout.HorizontalSlider(commandedThrottle,.01f,1);
+        GUILayout.Label("Simulation speed: ×"+Time.timeScale.ToString("F0"));
+        GUILayout.BeginHorizontal();
+        foreach (var speed in FlightSpeeds)
+        {
+            var previousColor = GUI.backgroundColor;
+            GUI.backgroundColor = Mathf.Approximately(Time.timeScale, speed)
+                ? new Color(1f, .72f, .3f) : Color.white;
+            if (GUILayout.Button("×"+speed.ToString("F0"))) Time.timeScale = speed;
+            GUI.backgroundColor = previousColor;
+        }
+        GUILayout.EndHorizontal();
         if(rocket.EngineEnabled)rocket.SetThrottle(commandedThrottle);
         GUILayout.BeginHorizontal();
         if(GUILayout.Button("Shutdown"))rocket.StopEngine();
         GUILayout.EndHorizontal();
-        if(rocket.Launched && GUILayout.Button("Return to assembly")){rocket.ReturnToAssembly();Rebuild();view?.ShowAssembly();}
+        if(rocket.Launched && GUILayout.Button("Return to assembly")){Time.timeScale=1f;rocket.ReturnToAssembly();Rebuild();view?.ShowAssembly();}
         GUILayout.Label("Mass: "+(flight.TotalMass/1000).ToString("F2")+" t · TWR: "+flight.TWR.ToString("F2"));
         GUILayout.Label((rocket.EngineEnabled?"Thrust: ":"Available thrust: ")+(flight.Thrust/1000).ToString("F1")+" kN");
         GUILayout.Label(new GUIContent("Altitude: "+flight.Altitude.ToString("F1")+" m", "Rocket root height above the spherical planet surface."));
@@ -799,6 +811,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
 
     private void OnDestroy()
     {
+        if (Application.isPlaying && active == this) Time.timeScale = 1f;
         if(active==this)active=null;
         if(frameMaterial!=null)Destroy(frameMaterial);
         if(fuelMaterial!=null)Destroy(fuelMaterial);
