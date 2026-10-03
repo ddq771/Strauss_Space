@@ -29,6 +29,9 @@ public sealed class RocketAssemblyController : MonoBehaviour
 
     private RocketFlightModel flight;
     private float commandedThrottle=1;
+    // Set by an explicit Space/Shutdown; while set, raising the throttle
+    // doesn't relight the engine (see ApplyThrottle).
+    private bool pilotShutdown;
     private static readonly float[] FlightSpeeds = { 1f, 2f, 5f, 10f };
     // Seconds to ramp from 0% to 100% throttle while Shift/Ctrl is held.
     private const float ThrottleRampPerSecond=1f;
@@ -223,7 +226,8 @@ public sealed class RocketAssemblyController : MonoBehaviour
         }
         GUILayout.Label("Shift/Ctrl: throttle up/down. Z: full throttle. X: cut throttle. Space: toggle ignition.",new GUIStyle(GUI.skin.label){wordWrap=true});
         GUILayout.Label("Throttle: "+(commandedThrottle*100).ToString("F0")+"%");
-        commandedThrottle=GUILayout.HorizontalSlider(commandedThrottle,.01f,1);
+        var previousThrottle=commandedThrottle;
+        commandedThrottle=GUILayout.HorizontalSlider(commandedThrottle,0f,1);
         GUILayout.Label("Simulation speed: ×"+Time.timeScale.ToString("F0"));
         GUILayout.BeginHorizontal();
         foreach (var speed in FlightSpeeds)
@@ -235,11 +239,11 @@ public sealed class RocketAssemblyController : MonoBehaviour
             GUI.backgroundColor = previousColor;
         }
         GUILayout.EndHorizontal();
-        if(rocket.EngineEnabled)rocket.SetThrottle(commandedThrottle);
+        ApplyThrottle(previousThrottle);
         GUILayout.BeginHorizontal();
-        if(GUILayout.Button("Shutdown"))rocket.StopEngine();
+        if(GUILayout.Button("Shutdown")){rocket.StopEngine();pilotShutdown=true;}
         GUILayout.EndHorizontal();
-        if(rocket.Launched && GUILayout.Button("Return to assembly")){Time.timeScale=1f;rocket.ReturnToAssembly();Rebuild();view?.ShowAssembly();}
+        if(rocket.Launched && GUILayout.Button("Return to assembly")){Time.timeScale=1f;pilotShutdown=false;rocket.ReturnToAssembly();Rebuild();view?.ShowAssembly();}
         GUILayout.Label("Mass: "+(flight.TotalMass/1000).ToString("F2")+" t · TWR: "+flight.TWR.ToString("F2"));
         GUILayout.Label((rocket.EngineEnabled?"Thrust: ":"Available thrust: ")+(flight.Thrust/1000).ToString("F1")+" kN");
         GUILayout.Label(new GUIContent("Altitude: "+flight.Altitude.ToString("F1")+" m", "Rocket root height above the spherical planet surface."));
@@ -582,9 +586,10 @@ public sealed class RocketAssemblyController : MonoBehaviour
     private bool HandleEngineToggleKey()
     {
         if(!Application.isFocused || GUIUtility.keyboardControl!=0 || !Input.GetKeyDown(KeyCode.Space))return false;
-        if(rocket.EngineEnabled)rocket.StopEngine();
+        if(rocket.EngineEnabled){rocket.StopEngine();pilotShutdown=true;}
         else
         {
+            pilotShutdown=false;
             rocket.StartEngine(commandedThrottle);
             if(!rocket.Launched)notice=flight.Status;
         }
@@ -598,6 +603,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
     {
         HandleEngineToggleKey();
         if(!Application.isFocused || GUIUtility.keyboardControl!=0)return;
+        var previousThrottle=commandedThrottle;
         if(Input.GetKeyDown(KeyCode.Z))commandedThrottle=1f;
         else if(Input.GetKeyDown(KeyCode.X))commandedThrottle=0f;
         else
@@ -606,7 +612,18 @@ public sealed class RocketAssemblyController : MonoBehaviour
             var down=Input.GetKey(KeyCode.LeftControl)||Input.GetKey(KeyCode.RightControl);
             if(up!=down)commandedThrottle=Mathf.Clamp01(commandedThrottle+(up?1f:-1f)*ThrottleRampPerSecond*Time.deltaTime);
         }
+        ApplyThrottle(previousThrottle);
+    }
+
+    // Cutting the throttle to zero (X, Ctrl, the slider) or below an
+    // engine's minimum switches the engine off in Rocket. Raising it again
+    // relights it, KSP-style - previously only Space could, so Z/Shift
+    // looked dead after a cut. An explicit Space/Shutdown stays off.
+    private void ApplyThrottle(float previousThrottle)
+    {
         if(rocket.EngineEnabled)rocket.SetThrottle(commandedThrottle);
+        else if(!pilotShutdown && commandedThrottle>previousThrottle && commandedThrottle>0)
+            rocket.StartEngine(commandedThrottle);
     }
 
     public void SelectAtRay(Ray ray,float maxDistance)
@@ -724,6 +741,13 @@ public sealed class RocketAssemblyController : MonoBehaviour
         // already hide the tank stack, instead of flashing it visible
         // then hiding it once SetBodyModel runs at the end.
         activeBodyModelKey=preset.bodyModelKey;
+        // Shape first: every Rebuild() below positions the engine cluster,
+        // tanks and dock height from rocket.AssemblyMountLocalY, which is
+        // derived from the body dimensions. Resizing afterwards (with no
+        // further Rebuild) left the engines at the previous vehicle's mount
+        // height - mid-body on a taller preset model.
+        rocket.ConfigureShape(preset.bodyDiameter,preset.bodyHeight,preset.noseHeight,preset.engineHeight,preset.hullColor);
+        rocket.SetBodyModel(preset.bodyModelKey);
         SetSocketCount(preset.engineCount);
         for(var i=0;i<preset.engineCount;i++)InstallEngine(i,preset.engineId);
         layout.fuelType=preset.fuelType;
@@ -731,8 +755,6 @@ public sealed class RocketAssemblyController : MonoBehaviour
         SetTank(false,true,preset.fuelCapacity,preset.fuelDiameter);
         SetTank(true,true,preset.oxidizerCapacity,preset.oxidizerDiameter);
         flight.SetFill(1f);
-        rocket.ConfigureShape(preset.bodyDiameter,preset.bodyHeight,preset.noseHeight,preset.engineHeight,preset.hullColor);
-        rocket.SetBodyModel(preset.bodyModelKey);
         // The imported model already looks like the real vehicle - the
         // schematic tank recolor is only useful for the generated hull.
         if(string.IsNullOrEmpty(preset.bodyModelKey))SetTankColors(preset.hullColor,preset.hullColor);
@@ -890,6 +912,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         GUILayout.Label("Space also launches at the current throttle.",new GUIStyle(GUI.skin.label){wordWrap=true});
         if(GUILayout.Button("Launch",GUILayout.Height(34)))
         {
+            pilotShutdown=false;
             rocket.StartEngine(commandedThrottle);
             assemblyScroll=Vector2.zero;
             if(!rocket.Launched)notice=flight.Status;

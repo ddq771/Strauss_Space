@@ -44,58 +44,24 @@ public static class AtmosphereCheck
                 buildShell.Invoke(atmosphere, null);
             }
 
-            // The shell is rendered as several nested layers (see
-            // Atmosphere.Layer), not one child - verify each one, and that
-            // their thicknesses are strictly increasing (innermost first),
-            // since that ordering is what makes them read as nested shells
-            // instead of overlapping/fighting at the same radius.
-            var layersField = typeof(Atmosphere).GetField("layers",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var layers = (Atmosphere.Layer[])layersField.GetValue(atmosphere);
-            if (layers == null || layers.Length < 2)
-            {
-                throw new Exception("Expected multiple atmosphere layers, found " + (layers?.Length ?? 0));
-            }
-
-            var previousThickness = 0f;
-            for (var i = 0; i < layers.Length; i++)
-            {
-                var layerName = string.IsNullOrEmpty(layers[i].name) ? $"Atmosphere Layer {i}" : layers[i].name;
-                var shell = planet.transform.Find(layerName);
-                if (shell == null)
-                {
-                    throw new Exception("Atmosphere layer child was not created: " + layerName);
-                }
-
-                var shellRenderer = shell.GetComponent<MeshRenderer>();
-                if (shellRenderer == null || shellRenderer.sharedMaterial == null)
-                {
-                    throw new Exception("Atmosphere layer has no material: " + layerName);
-                }
-
-                var shaderName = shellRenderer.sharedMaterial.shader.name;
-                if (shaderName != "Strauss Space/Atmosphere")
-                {
-                    throw new Exception("Atmosphere layer '" + layerName + "' uses the wrong shader: " + shaderName);
-                }
-
-                var shellMeshFilter = shell.GetComponent<MeshFilter>();
-                if (shellMeshFilter == null || shellMeshFilter.sharedMesh == null || shellMeshFilter.sharedMesh.vertexCount == 0)
-                {
-                    throw new Exception("Atmosphere layer has no generated mesh: " + layerName);
-                }
-
-                if (shell.localScale.x <= 1f)
-                {
-                    throw new Exception("Atmosphere layer '" + layerName + "' is not larger than the planet (localScale.x = " + shell.localScale.x + ")");
-                }
-
-                if (layers[i].thicknessFraction <= previousThickness)
-                {
-                    throw new Exception("Atmosphere layers are not nested innermost-first at '" + layerName + "'");
-                }
-                previousThickness = layers[i].thicknessFraction;
-            }
+            // One scattering shell (see Atmosphere.cs) - the old nested
+            // troposphere/stratosphere/exosphere layers must be gone.
+            foreach (var legacy in new[] { "Troposphere", "Stratosphere", "Exosphere" })
+                if (planet.transform.Find(legacy) != null)
+                    throw new Exception("Legacy atmosphere layer still present: " + legacy);
+            var shell = planet.transform.Find("Atmosphere Scattering");
+            if (shell == null) throw new Exception("Atmosphere scattering shell was not created");
+            var shellRenderer = shell.GetComponent<MeshRenderer>();
+            if (shellRenderer == null || shellRenderer.sharedMaterial == null)
+                throw new Exception("Atmosphere shell has no material");
+            var shaderName = shellRenderer.sharedMaterial.shader.name;
+            if (shaderName != "Strauss Space/Atmosphere")
+                throw new Exception("Atmosphere shell uses the wrong shader: " + shaderName);
+            var shellMeshFilter = shell.GetComponent<MeshFilter>();
+            if (shellMeshFilter == null || shellMeshFilter.sharedMesh == null || shellMeshFilter.sharedMesh.vertexCount == 0)
+                throw new Exception("Atmosphere shell has no generated mesh");
+            if (shell.localScale.x <= 1f)
+                throw new Exception("Atmosphere shell is not larger than the planet (localScale.x = " + shell.localScale.x + ")");
 
             EditorSceneManager.SaveScene(scene);
             AssetDatabase.SaveAssets();

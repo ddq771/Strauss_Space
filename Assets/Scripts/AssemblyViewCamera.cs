@@ -212,13 +212,13 @@ public sealed class AssemblyViewCamera : MonoBehaviour
                     groundProximity = Mathf.Max(groundProximity, (float)flightModel.Altitude);
             }
 
-            RenderSettings.fog = groundProximity < 2000f;
-            RenderSettings.fogMode = FogMode.Linear;
-            RenderSettings.fogColor = new Color(.67f, .79f, .86f);
-            RenderSettings.fogStartDistance = Mathf.Max(140f, groundProximity * 2f) * scale;
-            RenderSettings.fogEndDistance = Mathf.Max(500f, groundProximity * 8f) * scale;
+            // Sky colour and distance haze come from the Atmosphere
+            // scattering shader at every altitude. This used to switch a
+            // flat sky colour + linear fog on below 2 km and the starfield
+            // above it, which snapped visibly on the way up.
+            RenderSettings.fog = false;
             var camera = GetComponent<Camera>();
-            camera.clearFlags = groundProximity < 2000f ? CameraClearFlags.SolidColor : CameraClearFlags.Skybox;
+            camera.clearFlags = CameraClearFlags.Skybox;
 
             // Far clip must reach whatever is actually visible: the ground
             // horizon from the current altitude while flying/orbiting close
@@ -256,6 +256,22 @@ public sealed class AssemblyViewCamera : MonoBehaviour
         if (planet != null && orbitalBlend > 0f)
             transform.rotation = Quaternion.Slerp(transform.rotation,
                 Quaternion.LookRotation(planet.transform.position-transform.position, Vector3.up), orbitalBlend);
+
+        // Zoomed out, the near clip above stays a fraction of a kilometre
+        // against a far clip of tens of thousands - on OpenGL's 24-bit depth
+        // that resolves only ~100 km at orbital range, so the planet and its
+        // atmosphere shells (38 km+ up) z-fought into a "dissolving" planet.
+        // Nothing sits between the camera and the ground, so push the near
+        // clip out toward the surface - capped by the focus distance so a
+        // tracked rocket close to the camera is never clipped.
+        if (planet != null && transform.parent != null)
+        {
+            var camera = GetComponent<Camera>();
+            var surfaceDistance = Vector3.Distance(transform.position, planet.transform.position) -
+                planet.Radius * PlanetBody.WorldUnitsPerMeter;
+            camera.nearClipPlane = Mathf.Max(camera.nearClipPlane,
+                Mathf.Min(surfaceDistance * .5f, distance * .1f * scale));
+        }
     }
 
     private void SetLocalSiteVisible(bool visible)

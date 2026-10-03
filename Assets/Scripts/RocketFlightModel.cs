@@ -26,6 +26,7 @@ public sealed class RocketFlightModel : MonoBehaviour
     private readonly System.Collections.Generic.List<Renderer> impactHidden=new System.Collections.Generic.List<Renderer>();
     public double HorizontalSpeed=>Math.Sqrt(Math.Max(0,Speed*Speed-VerticalSpeed*VerticalSpeed));
     public string Status {get;private set;}="Ready";
+    public bool Crashed=>crashed;
     public float FuelRemaining=>fuelRemaining;
     public float OxidizerRemaining=>oxidizerRemaining;
     public string FuelType=>fuelType;
