@@ -70,7 +70,7 @@ public sealed class FlightRecorder : MonoBehaviour
     private void FixedUpdate()
     {
         var dt = Time.fixedDeltaTime;
-        var velocity = body.linearVelocity / PlanetBody.WorldUnitsPerMeter;
+        var velocity = flight.GroundVelocity;
         var angularVelocity = body.angularVelocity;
         acceleration = (velocity - previousVelocity) / dt;
         angularAcceleration = (angularVelocity - previousAngularVelocity) / dt;
@@ -88,7 +88,8 @@ public sealed class FlightRecorder : MonoBehaviour
             return;
         }
 
-        elapsed += dt;
+        // Simulated seconds: on rails (×100, ×1000) each step covers more.
+        elapsed += dt * TimeWarp.ClockMultiplier;
         // Log the impact itself as a final row, then stop - nothing
         // changes afterwards.
         if (flight.Crashed)
@@ -141,15 +142,17 @@ public sealed class FlightRecorder : MonoBehaviour
         var gravity = planet != null
             ? planet.GetGravityAcceleration(body.worldCenterOfMass) / PlanetBody.WorldUnitsPerMeter
             : Vector3.zero;
-        var felt = body.isKinematic ? -gravity : acceleration - gravity;
+        // On rails the rocket is coasting in a vacuum: free fall, 0 g felt.
+        var onRails = TimeWarp.OnRails && rocket.Launched;
+        var felt = onRails ? Vector3.zero : body.isKinematic ? -gravity : acceleration - gravity;
         var altitude = flight.Altitude;
         var fields = new[]
         {
             altitude,
             flight.Speed,
-            body.isKinematic ? 0 : acceleration.magnitude,
+            onRails ? gravity.magnitude : body.isKinematic ? 0 : acceleration.magnitude,
             flight.Drag,
-            body.isKinematic ? 0 : Torque(),
+            body.isKinematic ? 0 : Torque(),   // (0 on rails: attitude held)
             flight.FuelRemaining + flight.OxidizerRemaining + flight.SolidPropellant,
             flight.TotalMass,
             elapsed,

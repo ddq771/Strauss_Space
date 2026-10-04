@@ -115,8 +115,9 @@ public sealed class SolarSystem : MonoBehaviour
     private void Update()
     {
         if (NeedsInitialize) Initialize();
-        // Game time, including the flight's ×2..×10 simulation speed.
-        Date = Date.AddSeconds(Time.deltaTime);
+        // Game time, including physics warp (×2..×10, via timeScale) and
+        // rails warp (×100, ×1000).
+        Date = Date.AddSeconds(Time.deltaTime * TimeWarp.ClockMultiplier);
         Apply();
     }
 

@@ -155,7 +155,7 @@ public sealed class TrajectoryDisplay : MonoBehaviour
         // (orbital radii are millions of metres).
         centre = planet.transform.position;
         var rw = (transform.position - centre) / PlanetBody.WorldUnitsPerMeter;
-        var vw = body.linearVelocity / PlanetBody.WorldUnitsPerMeter;
+        var vw = flight.GroundVelocity;
         var r = new Vec(rw.x, rw.y, rw.z);
         var v = new Vec(vw.x, vw.y, vw.z);
         mu = PlanetBody.UniversalGravitationalConstant * planet.Mass;

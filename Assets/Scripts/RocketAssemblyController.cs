@@ -36,7 +36,6 @@ public sealed class RocketAssemblyController : MonoBehaviour
     // Set by an explicit Space/Shutdown; while set, raising the throttle
     // doesn't relight the engine (see ApplyThrottle).
     private bool pilotShutdown;
-    private static readonly float[] FlightSpeeds = { 1f, 2f, 5f, 10f };
     // Seconds to ramp from 0% to 100% throttle while Shift/Ctrl is held.
     private const float ThrottleRampPerSecond=1f;
     private bool showFormulas;
@@ -242,22 +241,12 @@ public sealed class RocketAssemblyController : MonoBehaviour
         GUILayout.Label("Throttle: "+(commandedThrottle*100).ToString("F0")+"%");
         var previousThrottle=commandedThrottle;
         commandedThrottle=GUILayout.HorizontalSlider(commandedThrottle,0f,1);
-        GUILayout.Label("Simulation speed: ×"+Time.timeScale.ToString("F0"));
-        GUILayout.BeginHorizontal();
-        foreach (var speed in FlightSpeeds)
-        {
-            var previousColor = GUI.backgroundColor;
-            GUI.backgroundColor = Mathf.Approximately(Time.timeScale, speed)
-                ? new Color(1f, .72f, .3f) : Color.white;
-            if (GUILayout.Button("×"+speed.ToString("F0"))) Time.timeScale = speed;
-            GUI.backgroundColor = previousColor;
-        }
-        GUILayout.EndHorizontal();
+        TimeWarpControls();
         ApplyThrottle(previousThrottle);
         GUILayout.BeginHorizontal();
         if(GUILayout.Button("Shutdown")){rocket.StopEngine();pilotShutdown=true;}
         GUILayout.EndHorizontal();
-        if(rocket.Launched && GUILayout.Button("Return to assembly")){Time.timeScale=1f;pilotShutdown=false;rocket.ReturnToAssembly();Rebuild();view?.ShowAssembly();}
+        if(rocket.Launched && GUILayout.Button("Return to assembly")){TimeWarp.Request(1);pilotShutdown=false;rocket.ReturnToAssembly();Rebuild();view?.ShowAssembly();}
         GUILayout.Label("Mass: "+(flight.TotalMass/1000).ToString("F2")+" t · TWR: "+flight.TWR.ToString("F2"));
         GUILayout.Label((rocket.EngineEnabled?"Thrust: ":"Available thrust: ")+(flight.Thrust/1000).ToString("F1")+" kN");
         GUILayout.Label(new GUIContent("Altitude: "+flight.Altitude.ToString("F1")+" m", "Rocket root height above the spherical planet surface."));
@@ -636,6 +625,34 @@ public sealed class RocketAssemblyController : MonoBehaviour
         return true;
     }
 
+    // Simulation speed buttons: ×1-×10 run the physics faster; ×100/×1000
+    // warp on rails (see TimeWarp) - only coasting above 100 km in flight,
+    // or on the pad to fast-forward the clock.
+    private void TimeWarpControls()
+    {
+        GUILayout.Label("Simulation speed: ×"+TimeWarp.Rate.ToString("N0")+(TimeWarp.OnRails?(rocket.Launched?" (on rails)":" (clock)"):""));
+        // Two rows - physics speeds, then rails warp - so six buttons fit the
+        // panel width without squashing.
+        GUILayout.BeginHorizontal();
+        foreach (var rate in TimeWarp.Rates)
+        {
+            if (rate >= TimeWarp.RailsFrom && Mathf.Approximately(rate, TimeWarp.RailsFrom))
+            {
+                GUILayout.EndHorizontal();
+                GUILayout.BeginHorizontal();
+                GUILayout.Label("Warp:", GUILayout.Width(44));
+            }
+            var previousColor = GUI.backgroundColor;
+            GUI.backgroundColor = Mathf.Approximately(TimeWarp.Rate, rate)
+                ? new Color(1f, .72f, .3f) : Color.white;
+            if (GUILayout.Button("×"+rate.ToString("N0"))) TimeWarp.Request(rate);
+            GUI.backgroundColor = previousColor;
+        }
+        GUILayout.EndHorizontal();
+        if(!string.IsNullOrEmpty(TimeWarp.Message))
+            GUILayout.Label(TimeWarp.Message,new GUIStyle(GUI.skin.label){wordWrap=true,normal={textColor=new Color(1f,.75f,.4f)}});
+    }
+
     // Launch from the pad (Launch button / Space). Two ways this used to do
     // nothing with no explanation: a throttle left at 0% from an earlier
     // flight (lifts off at full throttle instead), and a rocket too heavy for
@@ -645,6 +662,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
     {
         if(rocket.Launched)return;
         pilotShutdown=false;
+        if(TimeWarp.OnRails)TimeWarp.Request(1);   // the pad clock warp ends at launch
         if(commandedThrottle<=.01f)commandedThrottle=1f;
         if(flight.Prepare(commandedThrottle) && flight.TWR<1)
         {
@@ -989,6 +1007,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         if(flight.Prepare(1f) || flight.Thrust>0)
             GUILayout.Label("Liftoff: "+(flight.TotalMass/1000).ToString("N0")+" t · "+(flight.Thrust/1e6).ToString("F1")+" MN · TWR "+flight.TWR.ToString("F2"),
                 new GUIStyle(GUI.skin.label){fontStyle=FontStyle.Bold,wordWrap=true});
+        TimeWarpControls();
         if(locked)
         {
             GUILayout.Label("REAL ROCKET: "+activePresetName.ToUpperInvariant());
@@ -1097,7 +1116,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
 
     private void OnDestroy()
     {
-        if (Application.isPlaying && active == this) Time.timeScale = 1f;
+        if (Application.isPlaying && active == this) TimeWarp.Request(1);
         if(active==this)active=null;
         if(frameMaterial!=null)Destroy(frameMaterial);
         if(fuelMaterial!=null)Destroy(fuelMaterial);

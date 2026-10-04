@@ -111,7 +111,10 @@ public sealed class RocketFlightModel : MonoBehaviour
     public double TotalMass=>DryMass+fuelRemaining+oxidizerRemaining+solidPropellant;
     public double LocalGravity=>planet!=null?planet.GetGravityAcceleration(transform.position).magnitude/PlanetBody.WorldUnitsPerMeter:0;
     public double TWR=>TotalMass>0 && LocalGravity>0?Thrust/(TotalMass*LocalGravity):0;
-    public double Speed=>GetComponent<Rigidbody>().linearVelocity.magnitude/PlanetBody.WorldUnitsPerMeter;
+    /// <summary>Velocity relative to the ground (m/s, world axes) - from the
+    /// orbit propagator while time-warping on rails, when the body is kinematic.</summary>
+    public Vector3 GroundVelocity=>TimeWarp.TryGetRailsVelocity(out var rails)?rails:GetComponent<Rigidbody>().linearVelocity/PlanetBody.WorldUnitsPerMeter;
+    public double Speed=>GroundVelocity.magnitude;
     // Signed radial velocity: independent of the rocket's orientation.
     public double VerticalSpeed
     {
@@ -119,7 +122,7 @@ public sealed class RocketFlightModel : MonoBehaviour
         {
             if(planet==null)return 0;
             var radial=(transform.position-planet.transform.position).normalized;
-            return Vector3.Dot(GetComponent<Rigidbody>().linearVelocity,radial)/PlanetBody.WorldUnitsPerMeter;
+            return Vector3.Dot(GroundVelocity,radial);
         }
     }
     private void Bind(){assembly??=GetComponent<RocketAssemblyController>();rocket??=GetComponent<Rocket>();planet??=FindFirstObjectByType<PlanetBody>();}
@@ -268,8 +271,7 @@ public sealed class RocketFlightModel : MonoBehaviour
         {
             if(planet==null)return Speed;
             var r=(transform.position-planet.transform.position)/PlanetBody.WorldUnitsPerMeter;
-            var v=GetComponent<Rigidbody>().linearVelocity/PlanetBody.WorldUnitsPerMeter;
-            return (v+Vector3.Cross(planet.SpinVector,r)).magnitude;
+            return (GroundVelocity+Vector3.Cross(planet.SpinVector,r)).magnitude;
         }
     }
 
