@@ -23,9 +23,13 @@ public sealed class RocketAssemblyController : MonoBehaviour
         public float fuelCapacity = 100f, oxidizerCapacity = 180f;
         public float fuelDiameter = 3.7f, oxidizerDiameter = 3.7f;
         public Vector2[] angles = new Vector2[MaxSockets];
-        public string[] engineIds = new string[MaxSockets];
+        // A fresh custom build starts with one F-1 on its single mount, so
+        // it can fly as-is (TWR ~2.2 with the default tanks).
+        public string[] engineIds = DefaultEngineIds();
         public EngineParameters[] parameters = new EngineParameters[MaxSockets];
     }
+    private const string DefaultEngineId="F1";
+    private static string[] DefaultEngineIds(){var ids=new string[MaxSockets];ids[0]=DefaultEngineId;return ids;}
 
     private RocketFlightModel flight;
     private float commandedThrottle=1;
@@ -143,6 +147,10 @@ public sealed class RocketAssemblyController : MonoBehaviour
         frameMaterial.SetFloat("_Metallic",.65f);
         if(fuelMaterial==null)fuelMaterial=new Material(frameMaterial){color=new Color(.88f,.65f,.28f)};
         if(oxidizerMaterial==null)oxidizerMaterial=new Material(frameMaterial){color=new Color(.55f,.78f,.88f)};
+        // Scenes saved before the default engine existed start with an empty
+        // mount - which can't launch at all. Give the starting rocket its F-1.
+        if(!locked && InstalledCount==0 && layout.frameInstalled && layout.sockets>=1 && FindEngine(DefaultEngineId)!=null)
+            layout.engineIds[0]=DefaultEngineId;
         SyncFields();
         Rebuild();
         Debug.Log("ROCKET_ASSEMBLY_READY: component catalog loaded; fuel and oxidizer tanks built.");
@@ -151,7 +159,13 @@ public sealed class RocketAssemblyController : MonoBehaviour
     public EngineParameters GetParameters(int slot)
     {
         if(slot<0 || slot>=SocketCount || FindEngine(layout.engineIds[slot])==null)return null;
-        layout.parameters[slot]??=EnginePerformance.Reference(layout.engineIds[slot]);
+        // Unity serializes the parameters array with empty (all-zero) entries
+        // rather than nulls, so a mount whose engine wasn't put there through
+        // InstallEngine can hold a blank entry - treat it as missing and use
+        // the engine's reference data. (User-edited parameters are always
+        // valid; SetParameters rejects anything else.)
+        if(layout.parameters[slot]==null || !layout.parameters[slot].Valid)
+            layout.parameters[slot]=EnginePerformance.Reference(layout.engineIds[slot]);
         return layout.parameters[slot];
     }
     public void SetParameters(int slot,EngineParameters values)
@@ -613,13 +627,33 @@ public sealed class RocketAssemblyController : MonoBehaviour
     {
         if(!Application.isFocused || GUIUtility.keyboardControl!=0 || !Input.GetKeyDown(KeyCode.Space))return false;
         if(rocket.EngineEnabled){rocket.StopEngine();pilotShutdown=true;}
+        else if(!rocket.Launched)TryLaunch();
         else
         {
             pilotShutdown=false;
             rocket.StartEngine(commandedThrottle);
-            if(!rocket.Launched)notice=flight.Status;
         }
         return true;
+    }
+
+    // Launch from the pad (Launch button / Space). Two ways this used to do
+    // nothing with no explanation: a throttle left at 0% from an earlier
+    // flight (lifts off at full throttle instead), and a rocket too heavy for
+    // its engines, whose clamps released onto a pad it could never leave
+    // (refused, saying why).
+    private void TryLaunch()
+    {
+        if(rocket.Launched)return;
+        pilotShutdown=false;
+        if(commandedThrottle<=.01f)commandedThrottle=1f;
+        if(flight.Prepare(commandedThrottle) && flight.TWR<1)
+        {
+            notice="Too heavy to lift off: TWR "+flight.TWR.ToString("F2")+" at "+(commandedThrottle*100).ToString("F0")+
+                "% throttle ("+(flight.Thrust/1e6).ToString("F2")+" MN vs "+(flight.TotalMass/1000).ToString("N0")+" t). Add or upgrade engines, or carry less propellant.";
+            return;
+        }
+        rocket.StartEngine(commandedThrottle);
+        if(!rocket.Launched)notice=flight.Status;
     }
 
     // KSP-style throttle keys: hold Shift/Ctrl to ramp, Z for full throttle,
@@ -945,10 +979,8 @@ public sealed class RocketAssemblyController : MonoBehaviour
         GUILayout.Label("Space also launches at the current throttle.",new GUIStyle(GUI.skin.label){wordWrap=true});
         if(GUILayout.Button("Launch",GUILayout.Height(34)))
         {
-            pilotShutdown=false;
-            rocket.StartEngine(commandedThrottle);
+            TryLaunch();
             assemblyScroll=Vector2.zero;
-            if(!rocket.Launched)notice=flight.Status;
             GUILayout.EndArea();
             GUIUtility.ExitGUI();
         }
