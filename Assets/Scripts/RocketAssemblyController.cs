@@ -934,7 +934,8 @@ public sealed class RocketAssemblyController : MonoBehaviour
         if(rocket.Launched)return;
         if(activePresetIndex>=0)
         {
-            var p=RocketPresets.All[activePresetIndex];
+            // Preset is a struct: write back into the array, not a copy.
+            ref var p=ref RocketPresets.All[activePresetIndex];
             p.payloadMass=Mathf.Clamp(kilograms,0f,Mathf.Max(p.payloadMax,p.payloadMass));
             flight.SetPresetDryMass(p.LiftoffDryMass);
         }
@@ -1053,18 +1054,34 @@ public sealed class RocketAssemblyController : MonoBehaviour
     private const float SasNaturalFrequency=.8f, SasDamping=.9f, SasRateGain=1.5f;
     public bool SasEnabled=>sasEnabled;
 
-    private void UpdateFlightGimbals()
+    // Keys are read every frame; the flight computer itself runs every
+    // physics step (FixedUpdate), so at ×10 speed it still corrects ten
+    // times as often as the frames - once per frame it lagged far enough
+    // behind Starship's big gimbals to go unstable and tip it over.
+    private Vector2 pilotInput;
+
+    private void ReadFlightInput()
     {
         if(Application.isFocused && !IgnorePilotInput && GUIUtility.keyboardControl==0 && Input.GetKeyDown(KeyCode.T))
         { sasEnabled=!sasEnabled; holdingAttitude=false; }
-        if(mountFrame==null || !mountFrame.CanGimbal)return;
         var input=Vector2.zero;
         if(Application.isFocused && !IgnorePilotInput && GUIUtility.keyboardControl==0)
         {
             input.x=((Input.GetKey(KeyCode.UpArrow)||Input.GetKey(KeyCode.W))?1f:0f)-((Input.GetKey(KeyCode.DownArrow)||Input.GetKey(KeyCode.S))?1f:0f);
             input.y=((Input.GetKey(KeyCode.LeftArrow)||Input.GetKey(KeyCode.A))?1f:0f)-((Input.GetKey(KeyCode.RightArrow)||Input.GetKey(KeyCode.D))?1f:0f);
         }
-        input=Vector2.ClampMagnitude(input,1f);
+        pilotInput=Vector2.ClampMagnitude(input,1f);
+    }
+
+    private void FixedUpdate()
+    {
+        if(rocket!=null && catalog!=null && rocket.Launched)UpdateFlightGimbals();
+    }
+
+    private void UpdateFlightGimbals()
+    {
+        if(mountFrame==null || !mountFrame.CanGimbal)return;
+        var input=pilotInput;
         var body=rocket.GetComponent<Rigidbody>();
         var thrust=(float)flight.Thrust*PlanetBody.WorldUnitsPerMeter;   // world force units
         var powered=(rocket.EngineEnabled || flight.SolidBurning) && thrust>0 && !body.isKinematic;
@@ -1126,7 +1143,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         {
             HandleStageKey();
             UpdateStaging();
-            UpdateFlightGimbals();
+            ReadFlightInput();
             UpdateFlightThrottle();
             return;
         }
