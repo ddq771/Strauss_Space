@@ -55,6 +55,10 @@ public sealed class RocketFlightModel : MonoBehaviour
     [SerializeField] private float[] engineCutoffs;
     [SerializeField] private float missionTime;
     [SerializeField] private bool mecoDone;
+    // The program's clock starts at the current stage's ignition (0 = liftoff).
+    [SerializeField] private float programStart;
+    private float ProgramTime=>missionTime-programStart;
+    public float StageBurnTime=>ProgramTime;
     public float MissionTime=>missionTime;
     public float MecoTime=>mecoTime;
     public bool MecoDone=>mecoDone;
@@ -62,8 +66,22 @@ public sealed class RocketFlightModel : MonoBehaviour
     public void SetFlightProgram(float meco,float[] throttle,float[] cutoffs)
     {
         Bind();if(rocket.Launched)return;
-        mecoTime=Mathf.Max(0,meco);throttleProgram=throttle;engineCutoffs=cutoffs;missionTime=0;mecoDone=false;
+        mecoTime=Mathf.Max(0,meco);throttleProgram=throttle;engineCutoffs=cutoffs;missionTime=0;mecoDone=false;programStart=0;
     }
+    /// <summary>Staging: the next stage's program, timed from its ignition now.</summary>
+    public void StartStageProgram(float cutoff,float[] throttle,float[] cutoffs)
+    {
+        mecoTime=Mathf.Max(0,cutoff);throttleProgram=throttle;engineCutoffs=cutoffs;mecoDone=false;programStart=missionTime;
+    }
+    /// <summary>Staging: the new stage's own propellant (kg) and fuel, mid-flight.</summary>
+    public void LoadStagePropellant(string fuel,float fuelKg,float oxidizerKg)
+    {
+        fuelType=fuel;fuelRemaining=fuelKg;oxidizerRemaining=oxidizerKg;tanksInitialized=true;UpdateMass();
+    }
+    /// <summary>Staging coast: no program cutoff fires before the next stage lights.</summary>
+    public void StopProgramUntilIgnition(){mecoDone=false;}
+    /// <summary>The last stage may relight after its programmed cutoff (e.g. the S-IVB for translunar injection).</summary>
+    public void AllowRelight(){mecoDone=false;mecoTime=0;}
     /// <summary>The flight program's throttle limit now (1 = none).</summary>
     public float ProgramThrottle
     {
@@ -71,9 +89,10 @@ public sealed class RocketFlightModel : MonoBehaviour
         {
             var p=throttleProgram;
             if(p==null || p.Length<2)return 1;
-            if(missionTime<=p[0])return p[1];
+            var t=ProgramTime;
+            if(t<=p[0])return p[1];
             for(var i=2;i+1<p.Length;i+=2)
-                if(missionTime<=p[i])return Mathf.Lerp(p[i-1],p[i+1],(missionTime-p[i-2])/Mathf.Max(1e-6f,p[i]-p[i-2]));
+                if(t<=p[i])return Mathf.Lerp(p[i-1],p[i+1],(t-p[i-2])/Mathf.Max(1e-6f,p[i]-p[i-2]));
             return p[^1];
         }
     }
@@ -83,7 +102,7 @@ public sealed class RocketFlightModel : MonoBehaviour
         var c=engineCutoffs;
         if(c==null || !rocket.Launched)return false;
         for(var i=0;i+1<c.Length;i+=2)
-            if(Mathf.RoundToInt(c[i+1])==socket && missionTime>=c[i])return true;
+            if(Mathf.RoundToInt(c[i+1])==socket && ProgramTime>=c[i])return true;
         return false;
     }
 
@@ -93,6 +112,13 @@ public sealed class RocketFlightModel : MonoBehaviour
     // the parts (structure + tank shells + engines + frame).
     [SerializeField] private float presetDryMass;
     public void SetPresetDryMass(float kilograms){Bind();if(rocket.Launched)return;presetDryMass=Mathf.Max(0,kilograms);UpdateMass();}
+    /// <summary>Staging: the mass now riding above the propellant (kg), mid-flight.</summary>
+    public void SetStageDryMass(float kilograms){presetDryMass=Mathf.Max(1,kilograms);UpdateMass();}
+    /// <summary>Staging: something shed mid-burn (strap-ons) - kg off the dry mass.</summary>
+    public void ShedDryMass(float kilograms){if(presetDryMass>0){presetDryMass=Mathf.Max(1,presetDryMass-kilograms);UpdateMass();}}
+    /// <summary>Staging: the solid boosters separate (spent casings and any sliver of grain go with them).</summary>
+    public void JettisonSolids(){solidCount=0;solidPropellant=0;SolidThrust=0;UpdateMass();}
+    public double LiquidPropellant=>fuelRemaining+oxidizerRemaining;
     public int SolidBoosterCount=>solidCount;
     public float SolidPropellant=>solidPropellant;
     public bool SolidBurning=>solidCount>0 && solidPropellant>0 && rocket!=null && rocket.Launched && !crashed;
@@ -118,7 +144,7 @@ public sealed class RocketFlightModel : MonoBehaviour
         var fraction=flow>0?used/(flow*dt):0;
         UpdateSolidThrust();
         var direction=assembly.InstalledCount>0?assembly.ResultantThrustDirection:transform.up;
-        var basePoint=transform.TransformPoint(Vector3.up*rocket.BodyBaseLocalY);
+        var basePoint=transform.TransformPoint(Vector3.up*rocket.ActiveBaseLocalY);
         body.AddForceAtPosition(direction*(float)(SolidThrust*fraction*PlanetBody.WorldUnitsPerMeter),basePoint,ForceMode.Force);
         solidPropellant=Mathf.Max(0,solidPropellant-(float)used);
         solidBurnTime+=dt;
@@ -207,7 +233,7 @@ public sealed class RocketFlightModel : MonoBehaviour
         Bind();fuelRemaining=(assembly.FuelTank!=null?assembly.FuelTank.Capacity:0)*FuelDensity*initialFill;
         oxidizerRemaining=(assembly.OxidizerTank!=null?assembly.OxidizerTank.Capacity:0)*OxygenDensity*initialFill;
         solidPropellant=Solid!=null?(float)(solidCount*Solid.propellantMass):0;solidBurnTime=0;
-        missionTime=0;mecoDone=false;
+        missionTime=0;mecoDone=false;programStart=0;
         tanksInitialized=true;UpdateMass();
     }
     public void AssemblyChanged()
@@ -230,7 +256,9 @@ public sealed class RocketFlightModel : MonoBehaviour
         if(Solid!=null)DryMass+=solidCount*Solid.inertMass;
         var body=GetComponent<Rigidbody>();body.mass=(float)Math.Max(.001,TotalMass);
         var weighted=Vector3.zero;
-        var parts=presetDryMass<=0; // preset dry mass sits at the body's centre (local origin)
+        var parts=presetDryMass<=0;
+        // A preset's dry mass sits at the middle of the stack still attached.
+        if(!parts)weighted+=Vector3.up*((rocket.ActiveBottom+rocket.ActiveTop)*.5f-rocket.TotalHeight*.5f)*PlanetBody.WorldUnitsPerMeter*presetDryMass;
         var frameMass=parts&&assembly.FrameInstalled?120+50*(assembly.SocketCount-1):0;
         weighted+=Vector3.up*rocket.AssemblyMountLocalY*frameMass;
         foreach(var t in new[]{assembly.FuelTank,assembly.OxidizerTank})
@@ -331,13 +359,13 @@ public sealed class RocketFlightModel : MonoBehaviour
         if(sinAlpha>1e-5)
         {
             var normal=q*FrontalArea*normalForceSlope*sinAlpha;
-            var cp=transform.TransformPoint(Vector3.up*(rocket.BodyBaseLocalY+centerOfPressure*rocket.TotalHeight*u));
+            var cp=transform.TransformPoint(Vector3.up*(rocket.ActiveBaseLocalY+centerOfPressure*rocket.ActiveHeight*u));
             body.AddForceAtPosition(-crossflow.normalized*(float)(normal*u),cp,ForceMode.Force);
         }
         // Pitch/yaw damping: the air resists the vehicle swinging round.
         var spin=body.angularVelocity;
         var swing=spin-Vector3.Dot(spin,axis)*axis;
-        var length=rocket.TotalHeight;
+        var length=rocket.ActiveHeight;
         var k=q*FrontalArea*length*length*PitchDampingCoefficient/(2*speed);
         body.AddTorque(-swing*(float)(k*u*u),ForceMode.Force);
     }
@@ -408,7 +436,7 @@ public sealed class RocketFlightModel : MonoBehaviour
         if(assembly.InstalledCount==0){Status="Install an engine first.";return false;}
         if(assembly.FuelTank==null || assembly.OxidizerTank==null){Status="Both propellant tanks are required.";return false;}
         if(fuelRemaining<=0 || oxidizerRemaining<=0){Status="Propellant depleted.";return false;}
-        if(mecoDone){Status="MECO at T+"+Clock(mecoTime)+" - first stage burn complete (no staging yet).";return false;}
+        if(mecoDone){Status="Engine cutoff at T+"+Clock(programStart+mecoTime)+" - stage burn complete.";return false;}
         // The program caps the throttle (like a flight computer's Max Q limit)
         // rather than scaling it, so it can't push it under an engine's minimum.
         throttle=Math.Min(throttle,ProgramThrottle);
@@ -453,11 +481,11 @@ public sealed class RocketFlightModel : MonoBehaviour
         // keeps slowing the rocket while coasting or falling, not just
         // during powered flight (Step() only runs with the engine firing).
         missionTime+=Time.fixedDeltaTime*TimeWarp.ClockMultiplier;
-        if(mecoTime>0 && !mecoDone && missionTime>=mecoTime)
+        if(mecoTime>0 && !mecoDone && ProgramTime>=mecoTime)
         {
             mecoDone=true;
             rocket.StopEngine();
-            Status="MECO at T+"+Clock(mecoTime)+" - first stage burn complete (no staging yet).";
+            Status="Engine cutoff at T+"+Clock(missionTime)+".";
         }
         ApplyDrag(GetComponent<Rigidbody>());
         BurnSolids(GetComponent<Rigidbody>(),Time.fixedDeltaTime);

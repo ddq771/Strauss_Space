@@ -64,6 +64,22 @@ public static class EnginePerformance
             // verniers (omitted here). Used as a preset's core engine only -
             // it has no catalog model of its own.
             case "RD108":p=new EngineParameters{gimbalRange=2.5f,gimbalRate=15,dryMass=1278,vacuumThrust=941000,vacuumIsp=315,mixtureRatio=2.39f,nozzleCount=4,source="RD-108 8D75K (Vostok-K core); verniers omitted",dataStatus="Published performance / simplified nozzle count"};p.exitDiameter=CalibratedDiameter(p.vacuumThrust,745000,4);return p;
+            // J-2: Saturn V S-II (×5) and S-IVB (×1) engine. 1,033 kN in
+            // vacuum, 486 kN at sea level, Isp 421 s, LOX/LH2 at O/F 5.5,
+            // ±7° gimbal; no throttling (restartable on the S-IVB).
+            case "J2":p=new EngineParameters{gimbalRange=7,gimbalRate=8,dryMass=1438,vacuumThrust=1033100,vacuumIsp=421,mixtureRatio=5.5f,fuel="LH2",source="Rocketdyne J-2 (Saturn V S-II / S-IVB)",dataStatus="Published performance / calibrated exit area"};p.exitDiameter=CalibratedDiameter(p.vacuumThrust,486200,1);return p;
+            // Upper-stage engines (no catalog model - their bodies carry them):
+            // Merlin Vacuum: 981 kN, Isp 348 s, 3.3 m nozzle, ±5°.
+            case "MerlinVac":return new EngineParameters{gimbalRange=5,gimbalRate=10,dryMass=490,vacuumThrust=981000,vacuumIsp=348,exitDiameter=3.3f,mixtureRatio=2.36f,minimumThrottle=.39f,source="SpaceX Merlin Vacuum (Falcon 9 second stage)",dataStatus="Published performance / estimated mass"};
+            // Raptor Vacuum: ~2,530 kN, Isp ~380 s, 2.3 m nozzle, fixed (the
+            // Ship steers with its sea-level Raptors).
+            case "RaptorVac":return new EngineParameters{gimbalRange=0,gimbalRate=0,allowGimbal=false,dryMass=2100,vacuumThrust=2530000,vacuumIsp=380,exitDiameter=2.3f,mixtureRatio=3.6f,minimumThrottle=.4f,fuel="Methane",source="SpaceX Raptor Vacuum (Starship Ship)",dataStatus="Estimated simulation preset"};
+            // RD-0109: Vostok-K Block E. 54.5 kN, Isp 323.5 s; steering nozzles
+            // as an equivalent ±3°.
+            case "RD0109":return new EngineParameters{gimbalRange=3,gimbalRate=10,dryMass=121,vacuumThrust=54500,vacuumIsp=323.5f,exitDiameter=.5f,mixtureRatio=2.5f,source="Kosberg RD-0109 (Vostok-K Block E)",dataStatus="Published performance / estimated geometry"};
+            // Space Shuttle OMS (AJ10-190): 26.7 kN each, Isp 316 s, MMH /
+            // N2O4, ±6° gimbal.
+            case "OMS":return new EngineParameters{gimbalRange=6,gimbalRate=5,dryMass=118,vacuumThrust=26700,vacuumIsp=316,exitDiameter=1.17f,mixtureRatio=1.65f,fuel="MMH",source="Aerojet AJ10-190 (Shuttle Orbital Maneuvering System)",dataStatus="Published performance"};
             default:return null;
         }
     }

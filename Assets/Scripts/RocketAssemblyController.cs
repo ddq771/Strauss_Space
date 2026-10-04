@@ -251,9 +251,19 @@ public sealed class RocketAssemblyController : MonoBehaviour
         GUILayout.BeginHorizontal();
         if(GUILayout.Button("Shutdown")){rocket.StopEngine();pilotShutdown=true;}
         GUILayout.EndHorizontal();
-        if(rocket.Launched && GUILayout.Button("Return to assembly")){TimeWarp.Request(1);pilotShutdown=false;rocket.ReturnToAssembly();Rebuild();view?.ShowAssembly();}
+        if(rocket.Launched && GUILayout.Button("Return to assembly"))
+        {
+            TimeWarp.Request(1);pilotShutdown=false;rocket.ReturnToAssembly();
+            // A preset may have dropped stages: reload it whole.
+            if(activePresetIndex>=0){var index=activePresetIndex;locked=false;LoadPreset(index);}
+            else Rebuild();
+            view?.ShowAssembly();
+        }
         GUILayout.Label("Mass: "+(flight.TotalMass/1000).ToString("F2")+" t · TWR: "+flight.TWR.ToString("F2"));
         GUILayout.Label((rocket.EngineEnabled?"Thrust: ":"Available thrust: ")+(flight.Thrust/1000).ToString("F1")+" kN");
+        if(StageName(stageIndex)!=null)
+            GUILayout.Label(new GUIContent("Stage "+(stageIndex+1)+"/"+StageCount+": "+StageName(stageIndex)+
+                (separated?" - separated, next stage igniting":""),"Stages separate automatically at the end of each burn and the next one lights, on the real vehicle's timeline."));
         if(flight.HasFlightProgram)
         {
             var program="T+"+RocketFlightModel.Clock(flight.MissionTime);
@@ -317,11 +327,18 @@ public sealed class RocketAssemblyController : MonoBehaviour
         GUILayout.BeginHorizontal();GUILayout.Label("−10°");GUILayout.FlexibleSpace();GUILayout.Label("0°");GUILayout.FlexibleSpace();GUILayout.Label("+10°");GUILayout.EndHorizontal();
     }
 
+    private readonly Dictionary<string,EngineCatalog.Entry> modelLessEngines=new Dictionary<string,EngineCatalog.Entry>();
     public EngineCatalog.Entry FindEngine(string id)
     {
         if(catalog==null || catalog.engines==null || string.IsNullOrEmpty(id))return null;
         foreach(var engine in catalog.engines) if(engine.id==id)return engine;
-        return null;
+        // Engines a preset's body model carries itself (e.g. the Saturn V's
+        // J-2s) need performance data but no catalog model: a model-less
+        // entry, never offered in the sandbox engine list.
+        if(EnginePerformance.Reference(id)==null)return null;
+        if(!modelLessEngines.TryGetValue(id,out var entry))
+            modelLessEngines[id]=entry=new EngineCatalog.Entry{id=id,title=id,height=3f,diameter=2f};
+        return entry;
     }
 
     private void Remember()
@@ -441,7 +458,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         var bodyThrust=!string.IsNullOrEmpty(activeBodyModelKey);
         cluster=new GameObject(bodyThrust?"Body Thrust":"Engine Cluster").transform;
         cluster.SetParent(transform,false);
-        cluster.localPosition=Vector3.up*(bodyThrust?rocket.BodyBaseLocalY:rocket.AssemblyMountLocalY);
+        cluster.localPosition=Vector3.up*(bodyThrust?rocket.ActiveBaseLocalY:rocket.AssemblyMountLocalY);
         cluster.localScale=Vector3.one*PlanetBody.WorldUnitsPerMeter;
         mountFrame=null;
         var largestDiameter=1.0f;
@@ -582,6 +599,158 @@ public sealed class RocketAssemblyController : MonoBehaviour
     }
 
     private Vector2 flightGimbal;
+    // --- Staging ------------------------------------------------------------
+    // A staged preset flies its stages in order: when the current stage's
+    // burn ends (its programmed cutoff, or running dry) it separates after
+    // the next stage's separationDelay - its parts of the body model fall
+    // away as a DroppedStage with its mass - and the next stage lights after
+    // its ignitionDelay, with its own engines, propellant and flight program,
+    // thrusting from its own base. Mid-burn drops (strap-ons, SRBs) fall away
+    // at their times. The last stage may be relit after its cutoff.
+    private int activePresetIndex=-1;
+    private int stageIndex;            // 0 = first stage
+    private float separationAt=-1, ignitionAt=-1;
+    private bool separated, finalRelightOffered;
+    private readonly HashSet<int> dropsDone=new HashSet<int>();
+    public int StageIndex=>stageIndex;
+    public int StageCount=>activePresetIndex>=0 && RocketPresets.All[activePresetIndex].Staged ? RocketPresets.All[activePresetIndex].upperStages.Length+1 : 1;
+    [Serializable] private class StageExtentFile { public float height_m; public StageExtent[] stages; }
+    [Serializable] private class StageExtent { public string name; public float bottom_m, top_m; }
+
+    private void ResetStaging(int presetIndex)
+    {
+        activePresetIndex=presetIndex;stageIndex=0;separationAt=ignitionAt=-1;separated=false;finalRelightOffered=false;
+        dropsDone.Clear();
+        DroppedStage.ClearAll();
+    }
+
+    public string StageName(int index)
+    {
+        if(activePresetIndex<0)return null;
+        var p=RocketPresets.All[activePresetIndex];
+        if(!p.Staged)return null;
+        return index==0?(p.firstStageName??"First stage"):p.upperStages[index-1].name;
+    }
+
+    private void UpdateStaging()
+    {
+        if(activePresetIndex<0 || flight.Crashed)return;
+        var p=RocketPresets.All[activePresetIndex];
+        if(!p.Staged)return;
+        var now=flight.MissionTime;
+
+        // Mid-burn drops of the current stage.
+        var drops=stageIndex==0?p.firstStageDrops:p.upperStages[stageIndex-1].drops;
+        if(drops!=null && !separated)
+            for(var i=0;i<drops.Length;i++)
+                if(!dropsDone.Contains(i) && flight.StageBurnTime>=drops[i].time)
+                {
+                    dropsDone.Add(i);
+                    Detach(drops[i].modelStages,drops[i].mass+(drops[i].solids?SolidCasingMass():0),"Dropped "+string.Join(", ",drops[i].modelStages));
+                    if(drops[i].solids)flight.JettisonSolids();
+                    else flight.ShedDryMass(drops[i].mass);
+                    notice=string.Join(", ",drops[i].modelStages).Replace("_"," ")+" separated at T+"+RocketFlightModel.Clock(now)+".";
+                }
+
+        if(stageIndex>=p.upperStages.Length)
+        {
+            // Last stage: after its programmed cutoff it may be relit (Space).
+            if(flight.MecoDone && !finalRelightOffered)
+            {
+                finalRelightOffered=true;
+                flight.AllowRelight();
+                notice=StageName(stageIndex)+" cutoff at T+"+RocketFlightModel.Clock(now)+" - press Space to relight.";
+            }
+            return;
+        }
+        var next=p.upperStages[stageIndex];
+        var spent=flight.MecoDone || flight.FuelRemaining<=0 || flight.OxidizerRemaining<=0;
+        if(!separated && separationAt<0 && spent && !rocket.EngineEnabled)
+            separationAt=now+next.separationDelay;
+        if(!separated && separationAt>=0 && now>=separationAt)Separate(p,next,now);
+        if(separated && now>=ignitionAt)Ignite(next,now);
+    }
+
+    private float SolidCasingMass()
+    {
+        var solid=EnginePerformance.Solid(RocketPresets.All[activePresetIndex].solidBoosterId);
+        return solid!=null?(float)(solid.inertMass*flight.SolidBoosterCount):0f;
+    }
+
+    private void Separate(RocketPresets.Preset p,RocketPresets.StageSpec next,float now)
+    {
+        var spentParts=stageIndex==0?p.firstStageModelStages:p.upperStages[stageIndex-1].modelStages;
+        var spentDry=stageIndex==0?p.dryMass:p.upperStages[stageIndex-1].dryMass;
+        Detach(spentParts,spentDry+(float)flight.LiquidPropellant,(StageName(stageIndex)??"Stage")+" (spent)");
+        if(flight.SolidBoosterCount>0)flight.JettisonSolids();
+
+        // What's left: the next stage's propellant in the tanks, everything
+        // else above it as dry mass.
+        var above=p.payloadMass+next.dryMass;
+        for(var j=stageIndex+1;j<p.upperStages.Length;j++)
+            above+=p.upperStages[j].dryMass+p.upperStages[j].fuelMass+p.upperStages[j].oxidizerMass;
+        flight.LoadStagePropellant(next.fuelType,next.fuelMass,next.oxidizerMass);
+        flight.SetStageDryMass(above);
+
+        // The stack is now from the next stage's base up.
+        var extents=Resources.Load<TextAsset>("RocketBodies/"+activeBodyModelKey+"_stages");
+        if(extents!=null)
+        {
+            var file=JsonUtility.FromJson<StageExtentFile>(extents.text);
+            var spentSet=new HashSet<string>();
+            for(var k=0;k<=stageIndex;k++)
+            {
+                var parts=k==0?p.firstStageModelStages:p.upperStages[k-1].modelStages;
+                if(parts!=null)foreach(var part in parts)spentSet.Add(part);
+            }
+            if(p.firstStageDrops!=null)foreach(var d in p.firstStageDrops)foreach(var part in d.modelStages)spentSet.Add(part);
+            float bottom=float.MaxValue,top=0;
+            foreach(var e in file.stages)
+                if(!spentSet.Contains(e.name)){bottom=Mathf.Min(bottom,e.bottom_m);top=Mathf.Max(top,e.top_m);}
+            if(bottom<float.MaxValue)rocket.SetActiveStack(bottom,top,next.diameter);
+        }
+
+        // The next stage's engines (they light at ignitionAt).
+        layout.sockets=next.engines.Length;
+        for(var i=0;i<MaxSockets;i++){layout.engineIds[i]=i<next.engines.Length?next.engines[i]:null;layout.parameters[i]=i<next.engines.Length?EnginePerformance.Reference(next.engines[i]):null;gimbalAngles[i]=Vector2.zero;}
+        layout.fuelType=next.fuelType;
+        layout.fuelCapacity=next.fuelMass/Mathf.Max(1f,flight.FuelDensity);
+        layout.oxidizerCapacity=next.oxidizerMass/RocketFlightModel.OxygenDensity;
+        layout.fuelDiameter=layout.oxidizerDiameter=next.diameter;
+        Rebuild();
+        flight.StartStageProgram(next.burnSeconds,null,next.engineCutoffs);
+        flight.StopProgramUntilIgnition();
+        separated=true;
+        ignitionAt=now+next.ignitionDelay;
+        dropsDone.Clear();
+        notice=(StageName(stageIndex)??"Stage")+" separated at T+"+RocketFlightModel.Clock(now)+".";
+    }
+
+    private void Ignite(RocketPresets.StageSpec next,float now)
+    {
+        stageIndex++;
+        separated=false;separationAt=ignitionAt=-1;
+        flight.StartStageProgram(next.burnSeconds,null,next.engineCutoffs);
+        pilotShutdown=false;
+        commandedThrottle=1f;
+        rocket.StartEngine(commandedThrottle);
+        notice=next.name+" ignition at T+"+RocketFlightModel.Clock(now)+(rocket.EngineEnabled?".":" failed: "+flight.Status);
+    }
+
+    // Moves named Stage_* groups of the body model into a falling DroppedStage.
+    private void Detach(string[] modelStages,float mass,string label)
+    {
+        if(modelStages==null || modelStages.Length==0)return;
+        var root=rocket.transform.Find("Imported Body/"+activeBodyModelKey);
+        if(root==null)return;
+        var parts=new List<Transform>();
+        foreach(var name in modelStages){var t=root.Find("Stage_"+name);if(t!=null)parts.Add(t);}
+        if(parts.Count==0)return;
+        // A small separation push: retro-rockets / springs move it away aft.
+        var push=-rocket.transform.up*2f;
+        DroppedStage.Create(label,parts,mass,rocket.GetComponent<Rigidbody>(),push);
+    }
+
     // Flight control. With SAS (the flight computer, T toggles) W/S and A/D
     // command a pitch / yaw rate; let go and it holds the attitude it had.
     // Either way it works the way real thrust vector control does: each
@@ -670,6 +839,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         if(rocket==null || catalog==null)return;
         if(rocket.Launched)
         {
+            UpdateStaging();
             UpdateFlightGimbals();
             UpdateFlightThrottle();
             return;
@@ -882,6 +1052,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         if(rocket.Launched || index<0 || index>=RocketPresets.All.Length)return;
         var preset=RocketPresets.All[index];
         undo.Clear();
+        ResetStaging(index);
         // Clear every slot first - switching directly from one preset (or a
         // sandbox build) to another must not leave stale engines behind in
         // slots the new preset doesn't get around to overwriting, and must
@@ -901,12 +1072,13 @@ public sealed class RocketAssemblyController : MonoBehaviour
         // further Rebuild) left the engines at the previous vehicle's mount
         // height - mid-body on a taller preset model.
         rocket.ConfigureShape(preset.bodyDiameter,preset.bodyHeight,preset.noseHeight,preset.engineHeight,preset.hullColor);
+        rocket.SetBodyModel(null);   // rebuilt fresh: staging detaches its parts
         rocket.SetBodyModel(preset.bodyModelKey);
         SetSocketCount(preset.engineCount);
         for(var i=0;i<preset.engineCount;i++)InstallEngine(i,preset.engineId);
         if(!string.IsNullOrEmpty(preset.coreEngineId))layout.parameters[0]=EnginePerformance.Reference(preset.coreEngineId);
         flight.SetSolidBoosters(preset.solidBoosterId,preset.solidBoosterCount);
-        flight.SetPresetDryMass(preset.dryMass);
+        flight.SetPresetDryMass(preset.LiftoffDryMass);
         flight.SetFlightProgram(preset.mecoSeconds,preset.throttleProgram,preset.engineCutoffs);
         flight.SetAerodynamics(preset.centerOfPressure,preset.normalForceSlope);
         layout.fuelType=preset.fuelType;
@@ -938,6 +1110,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         layout=new Layout();
         rocket.ConfigureShape(3.7f,35f,8f,4f,new Color(0.85f,0.86f,0.88f));
         rocket.SetBodyModel(null);
+        ResetStaging(-1);
         flight.SetSolidBoosters(null,0);
         flight.SetPresetDryMass(0);
         flight.SetFlightProgram(0,null,null);
@@ -994,7 +1167,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
     {
         if(tankStack!=null){tankStack.gameObject.SetActive(false);Destroy(tankStack.gameObject);}
         tankStack=new GameObject("Tank Stack").transform; tankStack.SetParent(transform,false);
-        tankStack.localPosition=Vector3.up*rocket.AssemblyMountLocalY;
+        tankStack.localPosition=Vector3.up*(string.IsNullOrEmpty(activeBodyModelKey)?rocket.AssemblyMountLocalY:rocket.ActiveBaseLocalY);
         tankStack.localScale=Vector3.one*PlanetBody.WorldUnitsPerMeter;
         stackHeight=0; FuelTank=null; OxidizerTank=null;
         if(layout.fuelInstalled)FuelTank=AddTank(false);

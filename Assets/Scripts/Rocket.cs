@@ -77,6 +77,26 @@ public sealed class Rocket : MonoBehaviour
     public float BodyBaseLocalY => -(bodyHeight + noseHeight + engineHeight) * .5f * PlanetBody.WorldUnitsPerMeter;
     public float BodyDiameter => bodyDiameter;
     public float TotalHeight => bodyHeight + noseHeight + engineHeight;   // m
+
+    // The part of the stack still attached, in metres from the full stack's
+    // base: all of it until staging drops the lower stages. Thrust acts at
+    // its bottom; the collider and the aerodynamics cover only this part.
+    private float activeBottom, activeTop = -1, activeDiameter = -1;
+    public float ActiveBottom => activeBottom;
+    public float ActiveTop => activeTop < 0 ? TotalHeight : activeTop;
+    public float ActiveHeight => ActiveTop - ActiveBottom;
+    public float ActiveDiameter => activeDiameter < 0 ? bodyDiameter : activeDiameter;
+    public float ActiveBaseLocalY => (activeBottom - TotalHeight * .5f) * PlanetBody.WorldUnitsPerMeter;
+    public void SetActiveStack(float bottom, float top, float diameter)
+    {
+        activeBottom = bottom; activeTop = top; activeDiameter = diameter;
+        var capsule = GetComponent<CapsuleCollider>();
+        if (capsule == null) return;
+        capsule.center = Vector3.up * ((bottom + top) * .5f - TotalHeight * .5f) * PlanetBody.WorldUnitsPerMeter;
+        capsule.height = (top - bottom) * PlanetBody.WorldUnitsPerMeter;
+        capsule.radius = diameter * .5f * PlanetBody.WorldUnitsPerMeter;
+    }
+    public void ResetActiveStack() { activeBottom = 0; activeTop = -1; activeDiameter = -1; }
     public float AssemblyMountLocalY =>
         (engineHeight - (bodyHeight + noseHeight + engineHeight) * .5f) * PlanetBody.WorldUnitsPerMeter;
 
@@ -165,6 +185,7 @@ public sealed class Rocket : MonoBehaviour
     public void ConfigureShape(float diameter,float height,float nose,float engineSkirt,Color color)
     {
         bodyDiameter=diameter;bodyHeight=height;noseHeight=nose;engineHeight=engineSkirt;hullColor=color;
+        ResetActiveStack();
         BuildVisual();
     }
 
