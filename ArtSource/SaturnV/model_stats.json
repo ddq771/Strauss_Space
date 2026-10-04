@@ -1,11 +1,21 @@
 {
-  "triangles": 2268,
-  "mesh_objects": 3,
-  "materials": 3,
+  "triangles": 8856,
+  "mesh_objects": 19,
+  "materials": 6,
+  "stages": [
+    "SIC",
+    "Interstage",
+    "LES",
+    "SII",
+    "SIVB",
+    "SLA",
+    "ServiceModule",
+    "CommandModule"
+  ],
   "bounds_m": {
-    "x": 11.301,
-    "y": 11.301,
-    "z": 111.0
+    "x": 13.5906,
+    "y": 13.5906,
+    "z": 110.4
   },
   "note": "Visual approximation; proportions and details are approximate, not scaled CAD."
 }

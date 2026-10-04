@@ -1,0 +1,18 @@
+{
+  "key": "Starship",
+  "height_m": 121.3,
+  "stages": [
+    {
+      "name": "SuperHeavy",
+      "bottom_m": 0.05,
+      "top_m": 71.0,
+      "note": "Booster: 33 Raptors; hot-stages at ~2.7 min and returns to the tower"
+    },
+    {
+      "name": "Ship",
+      "bottom_m": 71.1,
+      "top_m": 121.3,
+      "note": "Upper stage: 3 sea-level + 3 vacuum Raptors"
+    }
+  ]
+}

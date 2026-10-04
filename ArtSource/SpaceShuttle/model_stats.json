@@ -1,11 +1,17 @@
 {
-  "triangles": 4080,
-  "mesh_objects": 4,
-  "materials": 4,
+  "triangles": 23544,
+  "mesh_objects": 11,
+  "materials": 9,
+  "stages": [
+    "SRB_Left",
+    "SRB_Right",
+    "ExternalTank",
+    "Orbiter"
+  ],
   "bounds_m": {
-    "x": 12.05,
-    "y": 16.3,
-    "z": 56.0
+    "x": 23.8,
+    "y": 22.43,
+    "z": 56.1
   },
   "note": "Visual approximation; proportions and details are approximate, not scaled CAD."
 }

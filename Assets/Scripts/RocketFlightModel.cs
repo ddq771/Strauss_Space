@@ -17,6 +17,55 @@ public sealed class RocketFlightModel : MonoBehaviour
     // hull drags far more than Falcon 9's slender one); the sandbox default
     // above is used for anything built by hand.
     public void SetDragCoefficient(float value)=>dragCoefficient=Mathf.Max(0.01f,value);
+
+    // Solid rocket boosters (a preset's strap-ons, e.g. the Shuttle's SRBs):
+    // their own grain, separate from the liquid tanks; lit at liftoff and
+    // burned to depletion along the motor's thrust profile, whatever the
+    // liquid engines and throttle are doing. The spent casings stay attached
+    // (no staging yet).
+    [SerializeField] private string solidId;
+    [SerializeField] private int solidCount;
+    [SerializeField] private float solidPropellant;
+    [SerializeField] private float solidBurnTime;
+    private EnginePerformance.SolidMotor solidMotor;
+    // A preset's real non-propellant mass (kg): first-stage structure and
+    // engines plus the fully fuelled upper stages, payload and fairing - so
+    // liftoff weight matches the real vehicle. 0 = sandbox estimate from
+    // the parts (structure + tank shells + engines + frame).
+    [SerializeField] private float presetDryMass;
+    public void SetPresetDryMass(float kilograms){Bind();if(rocket.Launched)return;presetDryMass=Mathf.Max(0,kilograms);UpdateMass();}
+    public int SolidBoosterCount=>solidCount;
+    public float SolidPropellant=>solidPropellant;
+    public bool SolidBurning=>solidCount>0 && solidPropellant>0 && rocket!=null && rocket.Launched && !crashed;
+    public string SolidTitle=>Solid?.title;
+    private EnginePerformance.SolidMotor Solid=>solidMotor??=string.IsNullOrEmpty(solidId)?null:EnginePerformance.Solid(solidId);
+    public void SetSolidBoosters(string id,int count)
+    {
+        Bind();if(rocket.Launched)return;
+        solidId=id;solidMotor=null;solidCount=Solid!=null?Mathf.Max(0,count):0;
+        Refill();
+    }
+    private void UpdateSolidThrust()
+    {
+        // Before liftoff this reads the ignition thrust, so the TWR shown on
+        // the pad includes the boosters.
+        SolidThrust=solidCount>0 && solidPropellant>0 && Solid!=null ? solidCount*Solid.Thrust(solidBurnTime,Pressure) : 0;
+    }
+    private void BurnSolids(Rigidbody body,float dt)
+    {
+        if(!SolidBurning || Solid==null){SolidThrust=0;return;}
+        var flow=solidCount*Solid.MassFlow(solidBurnTime);
+        var used=Math.Min(solidPropellant,flow*dt);
+        var fraction=flow>0?used/(flow*dt):0;
+        UpdateSolidThrust();
+        var direction=assembly.InstalledCount>0?assembly.ResultantThrustDirection:transform.up;
+        var basePoint=transform.TransformPoint(Vector3.up*rocket.BodyBaseLocalY);
+        body.AddForceAtPosition(direction*(float)(SolidThrust*fraction*PlanetBody.WorldUnitsPerMeter),basePoint,ForceMode.Force);
+        solidPropellant=Mathf.Max(0,solidPropellant-(float)used);
+        solidBurnTime+=dt;
+        if(solidPropellant<=0)SolidThrust=0;
+        UpdateMass();
+    }
     private RocketAssemblyController assembly;
     private Rocket rocket;
     private PlanetBody planet;
@@ -45,12 +94,21 @@ public sealed class RocketFlightModel : MonoBehaviour
         }
     }
     public double Pressure {get;private set;}
+    public double AirTemperature {get;private set;}=288.15;
+    public double AirDensity {get;private set;}
+    public double SpeedOfSound {get;private set;}=340.3;
+    public double Mach=>SpeedOfSound>0?Speed/SpeedOfSound:0;
+    // dragCoefficient scaled for the current Mach number (see MachDragFactor).
+    public double CurrentDragCoefficient=>dragCoefficient*MachDragFactor(Mach);
     public double Drag {get;private set;}
-    public double Thrust {get;private set;}
+    // Liquid engines' thrust (set by Prepare) plus any burning solid boosters.
+    public double LiquidThrust {get;private set;}
+    public double SolidThrust {get;private set;}
+    public double Thrust=>LiquidThrust+SolidThrust;
     public double FuelFlow {get;private set;}
     public double OxidizerFlow {get;private set;}
     public double DryMass {get;private set;}
-    public double TotalMass=>DryMass+fuelRemaining+oxidizerRemaining;
+    public double TotalMass=>DryMass+fuelRemaining+oxidizerRemaining+solidPropellant;
     public double LocalGravity=>planet!=null?planet.GetGravityAcceleration(transform.position).magnitude/PlanetBody.WorldUnitsPerMeter:0;
     public double TWR=>TotalMass>0 && LocalGravity>0?Thrust/(TotalMass*LocalGravity):0;
     public double Speed=>GetComponent<Rigidbody>().linearVelocity.magnitude/PlanetBody.WorldUnitsPerMeter;
@@ -83,6 +141,7 @@ public sealed class RocketFlightModel : MonoBehaviour
         impactHidden.Clear();
         Bind();fuelRemaining=(assembly.FuelTank!=null?assembly.FuelTank.Capacity:0)*FuelDensity*initialFill;
         oxidizerRemaining=(assembly.OxidizerTank!=null?assembly.OxidizerTank.Capacity:0)*OxygenDensity*initialFill;
+        solidPropellant=Solid!=null?(float)(solidCount*Solid.propellantMass):0;solidBurnTime=0;
         tanksInitialized=true;UpdateMass();
     }
     public void AssemblyChanged()
@@ -93,24 +152,30 @@ public sealed class RocketFlightModel : MonoBehaviour
     {
         Bind();
         // Structural base excludes components. Tank/frame estimates are explicit simulator assumptions.
-        DryMass=rocket.StructuralMass+(assembly.FrameInstalled?120+50*(assembly.SocketCount-1):0);
-        foreach(var t in new[]{assembly.FuelTank,assembly.OxidizerTank})
-            if(t!=null)DryMass+=15*(Math.PI*t.Diameter*t.Height+Math.PI*t.Diameter*t.Diameter*.5);
-        for(var i=0;i<assembly.SocketCount;i++)
-        {var p=assembly.GetParameters(i);if(p!=null)DryMass+=p.dryMass;}
+        if(presetDryMass>0)DryMass=presetDryMass;
+        else
+        {
+            DryMass=rocket.StructuralMass+(assembly.FrameInstalled?120+50*(assembly.SocketCount-1):0);
+            foreach(var t in new[]{assembly.FuelTank,assembly.OxidizerTank})
+                if(t!=null)DryMass+=15*(Math.PI*t.Diameter*t.Height+Math.PI*t.Diameter*t.Diameter*.5);
+            for(var i=0;i<assembly.SocketCount;i++)
+            {var p=assembly.GetParameters(i);if(p!=null)DryMass+=p.dryMass;}
+        }
+        if(Solid!=null)DryMass+=solidCount*Solid.inertMass;
         var body=GetComponent<Rigidbody>();body.mass=(float)Math.Max(.001,TotalMass);
         var weighted=Vector3.zero;
-        var frameMass=assembly.FrameInstalled?120+50*(assembly.SocketCount-1):0;
+        var parts=presetDryMass<=0; // preset dry mass sits at the body's centre (local origin)
+        var frameMass=parts&&assembly.FrameInstalled?120+50*(assembly.SocketCount-1):0;
         weighted+=Vector3.up*rocket.AssemblyMountLocalY*frameMass;
         foreach(var t in new[]{assembly.FuelTank,assembly.OxidizerTank})
         {
             if(t==null)continue;
-            var shellMass=15*(Math.PI*t.Diameter*t.Height+Math.PI*t.Diameter*t.Diameter*.5);
+            var shellMass=parts?15*(Math.PI*t.Diameter*t.Height+Math.PI*t.Diameter*t.Diameter*.5):0;
             var liquid=t==assembly.FuelTank?fuelRemaining:oxidizerRemaining;
             var center=transform.InverseTransformPoint(t.transform.TransformPoint(Vector3.up*t.Height*.5f));
             weighted+=center*(float)(shellMass+liquid);
         }
-        for(var i=0;i<assembly.SocketCount;i++)
+        for(var i=0;parts && i<assembly.SocketCount;i++)
         {
             var p=assembly.GetParameters(i);if(p==null)continue;
             var entry=assembly.FindEngine(assembly.GetEngineId(i));
@@ -128,46 +193,89 @@ public sealed class RocketFlightModel : MonoBehaviour
             body.inertiaTensorRotation=Quaternion.identity;
         }
     }
-    // Explicit isothermal Earth atmosphere approximation: pressure decays
-    // exponentially with altitude (scale height 8500 m, sea-level 101325 Pa).
+    // US Standard Atmosphere 1976 (StandardAtmosphere): pressure, real
+    // local temperature, density and speed of sound at the current altitude.
     // Called every physics step (not just while the engine is running) so
-    // Pressure/Drag telemetry stays live while coasting or falling, too.
+    // Pressure/Drag telemetry stays live while coasting or falling, too -
+    // and engine thrust uses this Pressure for nozzle back-pressure.
     private void UpdateAtmosphere()
     {
-        Pressure=planet!=null?101325*Math.Exp(-Altitude/8500):0;
+        if(planet==null){Pressure=0;AirDensity=0;return;}
+        var altitude=Altitude;
+        Pressure=StandardAtmosphere.Pressure(altitude);
+        AirTemperature=StandardAtmosphere.TemperatureKelvin(altitude);
+        AirDensity=StandardAtmosphere.Density(Pressure,AirTemperature);
+        SpeedOfSound=StandardAtmosphere.SpeedOfSound(AirTemperature);
+    }
+
+    // How a rocket's drag coefficient changes with Mach number, relative to
+    // its subsonic value: flat until ~0.6, a sharp rise through the
+    // transonic region as shock waves form (peaking ~1.9x just past Mach 1),
+    // then easing back off as the flow goes fully supersonic. A typical
+    // slender-body launcher curve; points are linearly interpolated.
+    private static readonly double[] MachPoints={0,0.6,0.8,0.9,0.95,1.0,1.05,1.1,1.2,1.5,2.0,3.0,5.0,10.0};
+    private static readonly double[] MachFactors={1,1,1.08,1.25,1.5,1.75,1.9,1.9,1.82,1.6,1.35,1.15,1.0,0.95};
+    public static double MachDragFactor(double mach)
+    {
+        if(mach<=MachPoints[0])return MachFactors[0];
+        for(var i=1;i<MachPoints.Length;i++)
+            if(mach<=MachPoints[i])
+                return MachFactors[i-1]+(MachFactors[i]-MachFactors[i-1])*(mach-MachPoints[i-1])/(MachPoints[i]-MachPoints[i-1]);
+        return MachFactors[^1];
     }
 
     /// <summary>
-    /// Applies aerodynamic drag opposing the rocket's velocity, scaled by air
-    /// density (from Pressure via the ideal gas law at a fixed reference
-    /// temperature) and speed squared. This is a deliberately simple model -
-    /// a single drag coefficient and the body's own cross-section, no
-    /// separate centre of pressure - tuned to give a felt, gradual slowdown
-    /// through the thick lower atmosphere rather than to match a real
-    /// vehicle's flight data.
+    /// Applies aerodynamic drag opposing the rocket's velocity:
+    /// F = ½ρv²·Cd(M)·A, with ρ from the standard atmosphere at the real
+    /// local temperature and Cd raised through the transonic region
+    /// (MachDragFactor). Still a single coefficient on the body's own
+    /// cross-section with no separate centre of pressure, so drag never
+    /// turns the vehicle.
     /// </summary>
     private void ApplyDrag(Rigidbody body)
     {
         UpdateAtmosphere();
-        if(Pressure<=0){Drag=0;return;}
+        if(AirDensity<=0){Drag=0;return;}
         var velocity=body.linearVelocity/PlanetBody.WorldUnitsPerMeter;
         var speed=velocity.magnitude;
         if(speed<0.05f){Drag=0;return;}
-        // Ideal gas law at a fixed reference temperature (288.15 K, standard
-        // sea-level) - consistent with the isothermal pressure model above.
-        var density=Pressure/(287.05*288.15);
-        var capsule=GetComponent<CapsuleCollider>();
-        var radius=capsule!=null?capsule.radius/PlanetBody.WorldUnitsPerMeter:1.85f;
-        var area=Math.PI*radius*radius;
-        Drag=0.5*density*speed*speed*dragCoefficient*area;
+        Drag=0.5*AirDensity*speed*speed*dragCoefficient*MachDragFactor(speed/SpeedOfSound)*FrontalArea;
         var direction=-velocity/speed;
         body.AddForce(direction*(float)(Drag*PlanetBody.WorldUnitsPerMeter),ForceMode.Force);
     }
 
+    // Cross-section the drag acts on: the body's own (collider) radius.
+    private CapsuleCollider frontalCapsule;
+    private double FrontalArea
+    {
+        get
+        {
+            // Cached: the trajectory predictor asks thousands of times a frame.
+            if(frontalCapsule==null)frontalCapsule=GetComponent<CapsuleCollider>();
+            var radius=frontalCapsule!=null?frontalCapsule.radius/PlanetBody.WorldUnitsPerMeter:1.85f;
+            return Math.PI*radius*radius;
+        }
+    }
+
+    /// <summary>
+    /// Drag deceleration (m/s²) this vehicle would feel at the given altitude
+    /// and airspeed with its current mass - the same model ApplyDrag uses, for
+    /// predicting a coasting trajectory (TrajectoryDisplay).
+    /// </summary>
+    public double DragDecelerationAt(double altitude,double speed)
+    {
+        if(TotalMass<=0 || speed<=0 || altitude>200000)return 0;
+        var temperature=StandardAtmosphere.TemperatureKelvin(altitude);
+        var density=StandardAtmosphere.Density(StandardAtmosphere.Pressure(altitude),temperature);
+        var mach=speed/StandardAtmosphere.SpeedOfSound(temperature);
+        return 0.5*density*speed*speed*dragCoefficient*MachDragFactor(mach)*FrontalArea/TotalMass;
+    }
+
     public bool Prepare(double throttle)
     {
-        if(crashed){Thrust=0;FuelFlow=0;OxidizerFlow=0;Status="Impact — vehicle destroyed. Return to assembly to rebuild.";return false;}
-        Bind();if(!tanksInitialized)Refill();UpdateMass();Thrust=0;FuelFlow=0;OxidizerFlow=0;
+        if(crashed){LiquidThrust=0;FuelFlow=0;OxidizerFlow=0;Status="Impact — vehicle destroyed. Return to assembly to rebuild.";return false;}
+        Bind();if(!tanksInitialized)Refill();UpdateMass();LiquidThrust=0;FuelFlow=0;OxidizerFlow=0;
+        UpdateSolidThrust();
         UpdateAtmosphere();
         if(assembly.InstalledCount==0){Status="Install an engine first.";return false;}
         if(assembly.FuelTank==null || assembly.OxidizerTank==null){Status="Both propellant tanks are required.";return false;}
@@ -181,7 +289,7 @@ public sealed class RocketFlightModel : MonoBehaviour
             if(!r.valid){Status="Outside engine model range: check parameters, pressure and minimum throttle.";return false;}
             totalThrust+=r.thrust;totalFuelFlow+=r.fuelFlow;totalOxidizerFlow+=r.oxidizerFlow;
         }
-        Thrust=totalThrust;FuelFlow=totalFuelFlow;OxidizerFlow=totalOxidizerFlow;
+        LiquidThrust=totalThrust;FuelFlow=totalFuelFlow;OxidizerFlow=totalOxidizerFlow;
         Status="Ready";return true;
     }
     public void Step(Rigidbody body,float throttle,float dt)
@@ -209,6 +317,7 @@ public sealed class RocketFlightModel : MonoBehaviour
         // keeps slowing the rocket while coasting or falling, not just
         // during powered flight (Step() only runs with the engine firing).
         ApplyDrag(GetComponent<Rigidbody>());
+        BurnSolids(GetComponent<Rigidbody>(),Time.fixedDeltaTime);
         var current=transform.position;
         if(!trackingImpact){previousPosition=current;trackingImpact=true;}
         var center=planet.transform.position;
@@ -230,7 +339,7 @@ public sealed class RocketFlightModel : MonoBehaviour
         transform.position=point;
         var body=GetComponent<Rigidbody>();
         rocket.StopEngine();body.linearVelocity=Vector3.zero;body.angularVelocity=Vector3.zero;body.isKinematic=true;
-        crashed=true;Thrust=0;FuelFlow=0;OxidizerFlow=0;
+        crashed=true;LiquidThrust=0;SolidThrust=0;solidPropellant=0;FuelFlow=0;OxidizerFlow=0;
         foreach(var surface in GetComponentsInChildren<Renderer>())if(surface.enabled){impactHidden.Add(surface);surface.enabled=false;}
         // Artistic fireball volume scales with remaining fuel, not a blast model.
         float size=5f+4f*Mathf.Pow(Mathf.Max(0,fuelRemaining),1f/3f);

@@ -207,7 +207,9 @@ Shader "Strauss Space/Atmosphere"
                 float3 transmittance = exp(-(extinctionR * viewDepth.x + betaM * 1.1 * viewDepth.y));
                 // Open sky: a bright daytime sky drowns out the stars behind
                 // it, the way the eye's adaptation does.
-                if (!hitsGround && !hasGeometry) transmittance *= saturate(1 - 6 * grey);
+                // (Not the Sun's own disc and glow, which outshines the sky.)
+                bool towardSun = dot(dir, sunDir) > cos(0.035);
+                if (!hitsGround && !hasGeometry && !towardSun) transmittance *= saturate(1 - 6 * grey);
                 float3 color = background * transmittance + light;
                 return fixed4(LinearToGammaSpace(saturate(color)), 1);
             }

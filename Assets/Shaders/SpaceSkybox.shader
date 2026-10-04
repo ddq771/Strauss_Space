@@ -41,6 +41,10 @@ Shader "Skybox/ProceduralStarfield"
             fixed4 _NebulaColorA;
             fixed4 _NebulaColorB;
             float _NebulaStrength;
+            // Set by SolarSystem: xyz = direction to the Sun, w = its angular
+            // radius (radians) - 0.27° from Earth's distance, varying a few
+            // percent between perihelion and aphelion.
+            float4 _SolarDirection;
 
             v2f vert(appdata v)
             {
@@ -105,6 +109,25 @@ Shader "Skybox/ProceduralStarfield"
                     float twinkle = hash13(cell + 91.7 + layer);
                     float brightness = _StarBrightness * (0.5 + 0.5 * twinkle) / (1.0 + layer * 0.5);
                     col += starMask * brightness;
+                }
+
+                // The Sun's disc at its true angular size, limb-darkened, with a
+                // faint glow around it. (The atmosphere shader reddens and dims
+                // it through the air like any other background.)
+                float sunRadius = max(_SolarDirection.w, 1e-4);
+                if (dot(_SolarDirection.xyz, _SolarDirection.xyz) > 0.5)
+                {
+                    float angle = acos(saturate(dot(dir, normalize(_SolarDirection.xyz))));
+                    float r = angle / sunRadius;
+                    if (r < 1)
+                    {
+                        float mu = sqrt(1 - r * r);
+                        col = fixed3(1, .97, .9) * (0.4 + 0.6 * mu);
+                    }
+                    else
+                    {
+                        col += fixed3(1, .9, .7) * 0.35 * exp(-(r - 1) * 1.6);
+                    }
                 }
 
                 return fixed4(col, 1);

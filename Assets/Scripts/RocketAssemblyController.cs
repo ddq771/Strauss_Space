@@ -247,16 +247,31 @@ public sealed class RocketAssemblyController : MonoBehaviour
         GUILayout.Label("Mass: "+(flight.TotalMass/1000).ToString("F2")+" t · TWR: "+flight.TWR.ToString("F2"));
         GUILayout.Label((rocket.EngineEnabled?"Thrust: ":"Available thrust: ")+(flight.Thrust/1000).ToString("F1")+" kN");
         GUILayout.Label(new GUIContent("Altitude: "+flight.Altitude.ToString("F1")+" m", "Rocket root height above the spherical planet surface."));
-        GUILayout.Label("Speed: "+flight.Speed.ToString("F1")+" m/s · Pressure: "+(flight.Pressure/1000).ToString("F1")+" kPa");
+        var trajectory=GetComponent<TrajectoryDisplay>();
+        if(trajectory!=null && trajectory.HasOrbit)
+        {
+            GUILayout.Label(new GUIContent("Apoapsis: "+TrajectoryDisplay.Km(trajectory.ApoapsisAltitude)+
+                (trajectory.TimeToApoapsis>0?" in "+TrajectoryDisplay.Clock(trajectory.TimeToApoapsis):"")+
+                " · Periapsis: "+TrajectoryDisplay.Km(trajectory.PeriapsisAltitude),
+                "Predicted coasting path from here (engines off), with drag below 100 km: highest point ahead, and the orbit's lowest point."));
+            GUILayout.Label(trajectory.Escaping?"Escape trajectory":
+                trajectory.InOrbit?"In orbit · period "+TrajectoryDisplay.Clock(trajectory.OrbitalPeriod):
+                trajectory.WillImpact?"Suborbital · impact in "+TrajectoryDisplay.Clock(trajectory.TimeToImpact):"Suborbital");
+        }
+        GUILayout.Label("Speed: "+flight.Speed.ToString("F1")+" m/s · Mach "+flight.Mach.ToString("F2"));
+        GUILayout.Label("Pressure: "+(flight.Pressure/1000).ToString("F1")+" kPa · Air: "+(flight.AirTemperature-273.15).ToString("F0")+" °C");
         GUILayout.Label(new GUIContent("Vertical speed: "+flight.VerticalSpeed.ToString("+0.0;-0.0;0.0")+" m/s", "Radial velocity relative to the planet: positive ascending, negative descending."));
         GUILayout.Label("Horizontal speed: "+flight.HorizontalSpeed.ToString("F1")+" m/s");
-        GUILayout.Label(new GUIContent("Drag: "+(flight.Drag/1000).ToString("F1")+" kN", "Aerodynamic drag opposing velocity; falls off with altitude as the air thins."));
+        GUILayout.Label(new GUIContent("Drag: "+(flight.Drag/1000).ToString("F1")+" kN · Cd "+flight.CurrentDragCoefficient.ToString("F2"), "Aerodynamic drag opposing velocity; falls off with altitude as the air thins, and the drag coefficient rises steeply around Mach 1."));
         GUILayout.Label("Fuel: "+flight.FuelRemaining.ToString("F1")+" kg ("+flight.FuelType+")");
         GUILayout.Label("LOX: "+flight.OxidizerRemaining.ToString("F1")+" kg");
+        if(flight.SolidBoosterCount>0)
+            GUILayout.Label(flight.SolidBoosterCount+" × "+flight.SolidTitle+": "+(flight.SolidPropellant/1000).ToString("F0")+" t propellant"+
+                (flight.SolidPropellant<=0?" (burnt out)":flight.SolidBurning?" · "+(flight.SolidThrust/1e6).ToString("F1")+" MN":""));
         GUILayout.Label("Flow: "+flight.FuelFlow.ToString("F2")+" + "+flight.OxidizerFlow.ToString("F2")+" kg/s");
         GUILayout.Label(flight.Status,new GUIStyle(GUI.skin.label){wordWrap=true});
         showFormulas=GUILayout.Toggle(showFormulas,"Show formulas");
-        if(showFormulas)GUILayout.Label("A = sum(pi × D² / 4)\nF = throttle × Fvac − p × A\nFlow = throttle × Fvac / (g0 × IspVac)\nFuel flow = Flow / (1 + O/F)\nLOX flow = Flow − Fuel flow\nTWR = total thrust / (vehicle mass × local gravity)\nGravity = G × planet mass / distance²\nForce direction = mount orientation\nTorque = offset from COM × force\nAltitude = max(0, distance to planet center − planet radius) [m]\nAtmosphere: p = 101325 × exp(−altitude / 8500)\nAir density = p / (287.05 × 288.15)\nDrag = 0.5 × density × speed² × Cd × body cross-section, opposing velocity\nLinear throttle; attached-flow approximation.",new GUIStyle(GUI.skin.label){wordWrap=true});
+        if(showFormulas)GUILayout.Label("A = sum(pi × D² / 4)\nF = throttle × Fvac − p × A\nFlow = throttle × Fvac / (g0 × IspVac)\nFuel flow = Flow / (1 + O/F)\nLOX flow = Flow − Fuel flow\nTWR = total thrust / (vehicle mass × local gravity)\nGravity = G × planet mass / distance²\nForce direction = mount orientation\nTorque = offset from COM × force\nAltitude = max(0, distance to planet center − planet radius) [m]\nAtmosphere: US Standard Atmosphere 1976 (temperature T and pressure p by layer)\nAir density = p / (287.05 × T)\nSpeed of sound = √(1.4 × 287.05 × T), Mach = speed / speed of sound\nDrag = 0.5 × density × speed² × Cd × Mach factor × body cross-section, opposing velocity\nMach factor: 1 below Mach 0.6, peaks 1.9× at Mach 1.05–1.1, 1.0 by Mach 5\nLinear throttle; attached-flow approximation.",new GUIStyle(GUI.skin.label){wordWrap=true});
         GUILayout.Space(10);
     }
 
@@ -396,9 +411,15 @@ public sealed class RocketAssemblyController : MonoBehaviour
         sockets.Clear();
         selectableParts.Clear();
         selection=null;
-        cluster=new GameObject("Engine Cluster").transform;
+        // A preset's body model carries its own engines and produces the
+        // thrust itself: no engine models, frame beams or adapter arms are
+        // built, only invisible thrust points (still on the gimbal mount, so
+        // steering works) at the base of the body. Keeps each stage's thrust
+        // with the stage's own geometry for future staging.
+        var bodyThrust=!string.IsNullOrEmpty(activeBodyModelKey);
+        cluster=new GameObject(bodyThrust?"Body Thrust":"Engine Cluster").transform;
         cluster.SetParent(transform,false);
-        cluster.localPosition=Vector3.up*rocket.AssemblyMountLocalY;
+        cluster.localPosition=Vector3.up*(bodyThrust?rocket.BodyBaseLocalY:rocket.AssemblyMountLocalY);
         cluster.localScale=Vector3.one*PlanetBody.WorldUnitsPerMeter;
         mountFrame=null;
         var largestDiameter=1.0f;
@@ -420,10 +441,11 @@ public sealed class RocketAssemblyController : MonoBehaviour
         var ringPlan= layout.sockets==3 ? null : PlanRings(layout.sockets-1,spacing);
         var outerRadius = layout.sockets==3 ? spacing/Mathf.Sqrt(3) : (ringPlan.Count>0 ? ringPlan[^1].radius : 0f);
         footprint=Mathf.Max(3.7f,2*outerRadius+largestDiameter);
-        if(layout.frameInstalled)Beam("Central Mount",Vector3.zero,new Vector3(0,-.25f,0),1.4f);
+        if(bodyThrust){lowestEngine=0;footprint=rocket.BodyDiameter;}
+        if(layout.frameInstalled && !bodyThrust)Beam("Central Mount",Vector3.zero,new Vector3(0,-.25f,0),1.4f);
         for(var i=0;i<SocketCount;i++)
         {
-            var p=Vector3.down*.3f;
+            var p=bodyThrust?Vector3.zero:Vector3.down*.3f;
             var onRing=layout.sockets==3 || i>0;
             if(onRing)
             {
@@ -436,6 +458,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
             var socket=new GameObject("Mount "+(i+1)).transform;
             socket.SetParent(cluster,false); socket.localPosition=p;
             sockets.Add(socket);
+            if(bodyThrust)continue;
             Beam("Adapter Arm",new Vector3(0,-.15f,0),p,.15f);
             Beam("Socket Plate",p+Vector3.up*.08f,p,.5f);
             var entry=FindEngine(layout.engineIds[i]);
@@ -456,7 +479,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
             {
                 var surface=child.GetComponent<Renderer>();if(surface!=null)frameSurfaces.Add(surface);
             }
-            AddSelectable(cluster.gameObject,AssemblySelectable.PartKind.Frame,0,frameSurfaces.ToArray());
+            if(!bodyThrust)AddSelectable(cluster.gameObject,AssemblySelectable.PartKind.Frame,0,frameSurfaces.ToArray());
             mountFrame=cluster.gameObject.AddComponent<RocketMountFrame>();
             mountFrame.Configure(layout.gimballed,sockets.ToArray());
             for(var i=0;i<SocketCount;i++)mountFrame.SetAngle(i,GetParameters(i)!=null && !GetParameters(i).allowGimbal?Vector2.zero:layout.angles[i]);
@@ -490,7 +513,9 @@ public sealed class RocketAssemblyController : MonoBehaviour
         if(rocket.Launched)return;
         var mount=GameObject.Find("Rocket Assembly Root");
         if(mount==null)return;
-        var heightBelowPivot=-rocket.AssemblyMountLocalY+(.4f+lowestEngine+ (layout.gimballed ? footprint*.1f : 0))*PlanetBody.WorldUnitsPerMeter;
+        var heightBelowPivot=!string.IsNullOrEmpty(activeBodyModelKey)
+            ? -rocket.BodyBaseLocalY // the body's own engine bells rest on the pad
+            : -rocket.AssemblyMountLocalY+(.4f+lowestEngine+ (layout.gimballed ? footprint*.1f : 0))*PlanetBody.WorldUnitsPerMeter;
         transform.position=mount.transform.position+mount.transform.up*heightBelowPivot;
         transform.rotation=mount.transform.rotation;
     }
@@ -750,6 +775,9 @@ public sealed class RocketAssemblyController : MonoBehaviour
         rocket.SetBodyModel(preset.bodyModelKey);
         SetSocketCount(preset.engineCount);
         for(var i=0;i<preset.engineCount;i++)InstallEngine(i,preset.engineId);
+        if(!string.IsNullOrEmpty(preset.coreEngineId))layout.parameters[0]=EnginePerformance.Reference(preset.coreEngineId);
+        flight.SetSolidBoosters(preset.solidBoosterId,preset.solidBoosterCount);
+        flight.SetPresetDryMass(preset.dryMass);
         layout.fuelType=preset.fuelType;
         flight.SetFuel(preset.fuelType);
         SetTank(false,true,preset.fuelCapacity,preset.fuelDiameter);
@@ -779,6 +807,8 @@ public sealed class RocketAssemblyController : MonoBehaviour
         layout=new Layout();
         rocket.ConfigureShape(3.7f,35f,8f,4f,new Color(0.85f,0.86f,0.88f));
         rocket.SetBodyModel(null);
+        flight.SetSolidBoosters(null,0);
+        flight.SetPresetDryMass(0);
         SetTankColors(DefaultFuelColor,DefaultOxidizerColor);
         flight.SetDragCoefficient(0.5f);
         selectedSocket=0;
@@ -840,7 +870,9 @@ public sealed class RocketAssemblyController : MonoBehaviour
         if(nose!=null)nose.localPosition=Vector3.up*(rocket.AssemblyMountLocalY+stackHeight*PlanetBody.WorldUnitsPerMeter);
         // Conservative collision envelope follows the rebuilt component stack.
         var capsule=GetComponent<CapsuleCollider>();
-        if(capsule!=null)
+        // A body model's collider comes from Rocket.ConfigureShape (the full
+        // vehicle); only the sandbox stack needs it fitted to its parts.
+        if(capsule!=null && string.IsNullOrEmpty(activeBodyModelKey))
         {
             var bottom=-.4f-lowestEngine; var top=stackHeight+8;
             capsule.center=Vector3.up*(rocket.AssemblyMountLocalY+(bottom+top)*.5f*PlanetBody.WorldUnitsPerMeter);
@@ -920,6 +952,10 @@ public sealed class RocketAssemblyController : MonoBehaviour
             GUIUtility.ExitGUI();
         }
         panelScroll=GUILayout.BeginScrollView(panelScroll);
+        // Liftoff figures at full throttle, solid boosters included.
+        if(flight.Prepare(1f) || flight.Thrust>0)
+            GUILayout.Label("Liftoff: "+(flight.TotalMass/1000).ToString("N0")+" t · "+(flight.Thrust/1e6).ToString("F1")+" MN · TWR "+flight.TWR.ToString("F2"),
+                new GUIStyle(GUI.skin.label){fontStyle=FontStyle.Bold,wordWrap=true});
         if(locked)
         {
             GUILayout.Label("REAL ROCKET: "+activePresetName.ToUpperInvariant());

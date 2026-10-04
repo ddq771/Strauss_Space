@@ -1,0 +1,36 @@
+{
+  "key": "Falcon9",
+  "height_m": 70.0,
+  "stages": [
+    {
+      "name": "FirstStage",
+      "bottom_m": 0.1,
+      "top_m": 42.6,
+      "note": "Booster: 9 Merlin 1D; separates at ~2.5 min, lands on its legs"
+    },
+    {
+      "name": "Fairing_A",
+      "bottom_m": 56.0,
+      "top_m": 70.0,
+      "note": "Fairing half, jettisoned at ~3.5 min"
+    },
+    {
+      "name": "Fairing_B",
+      "bottom_m": 56.0,
+      "top_m": 70.0,
+      "note": "Fairing half, jettisoned at ~3.5 min"
+    },
+    {
+      "name": "SecondStage",
+      "bottom_m": 37.6,
+      "top_m": 56.0,
+      "note": "Upper stage: 1 Merlin Vacuum"
+    },
+    {
+      "name": "Payload",
+      "bottom_m": 56.0,
+      "top_m": 64.4,
+      "note": "Generic satellite on its adapter"
+    }
+  ]
+}

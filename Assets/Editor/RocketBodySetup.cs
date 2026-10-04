@@ -45,10 +45,40 @@ public static class RocketBodySetup
         // temporary scene copy.
         var instance = UnityEngine.Object.Instantiate(model);
         instance.name = key;
+        GroupStages(key, instance.transform);
         var prefabPath = "Assets/Resources/RocketBodies/" + key + ".prefab";
         PrefabUtility.SaveAsPrefabAsset(instance, prefabPath);
         UnityEngine.Object.DestroyImmediate(instance);
         Debug.Log("ROCKET_BODY_PREFAB " + key + " -> " + prefabPath);
+    }
+
+    [Serializable] private class StageFile { public float height_m; public StageEntry[] stages; }
+    [Serializable] private class StageEntry { public string name; public float bottom_m, top_m; public string note; }
+
+    /// <summary>
+    /// Groups each stage's meshes (exported as "&lt;Stage&gt;__&lt;material&gt;" by
+    /// ArtSource/rocket_asset.py) under a "Stage_&lt;Stage&gt;" object whose pivot
+    /// sits at the stage's base, in the separation order listed in
+    /// &lt;Key&gt;_stages.json - so staging can later detach a stage by its
+    /// transform. Bodies without a stage file are left flat.
+    /// </summary>
+    private static void GroupStages(string key, Transform root)
+    {
+        var file = AssetDatabase.LoadAssetAtPath<TextAsset>("Assets/Resources/RocketBodies/" + key + "_stages.json");
+        if (file == null) return;
+        var data = JsonUtility.FromJson<StageFile>(file.text);
+        var meshes = new System.Collections.Generic.List<Transform>();
+        foreach (Transform child in root) meshes.Add(child);
+        foreach (var entry in data.stages)
+        {
+            var group = new GameObject("Stage_" + entry.name).transform;
+            group.SetParent(root, false);
+            // Model units are metres with the origin at the stack's centre.
+            group.localPosition = new Vector3(0f, entry.bottom_m - data.height_m / 2f, 0f);
+            foreach (var mesh in meshes)
+                if (mesh.name.StartsWith(entry.name + "__", StringComparison.Ordinal))
+                    mesh.SetParent(group, true);
+        }
     }
 
     /// <summary>

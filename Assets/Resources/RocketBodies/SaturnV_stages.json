@@ -1,0 +1,54 @@
+{
+  "key": "SaturnV",
+  "height_m": 110.6,
+  "stages": [
+    {
+      "name": "SIC",
+      "bottom_m": 0.2,
+      "top_m": 42.1,
+      "note": "First stage: five F-1; separates at ~2.7 min"
+    },
+    {
+      "name": "Interstage",
+      "bottom_m": 42.1,
+      "top_m": 47.7,
+      "note": "S-IC/S-II interstage ring, dropped ~30 s after S-II ignition"
+    },
+    {
+      "name": "LES",
+      "bottom_m": 101.589,
+      "top_m": 110.6,
+      "note": "Launch Escape System, jettisoned after S-II ignition"
+    },
+    {
+      "name": "SII",
+      "bottom_m": 44.7,
+      "top_m": 71.6,
+      "note": "Second stage: five J-2; separates at ~9 min"
+    },
+    {
+      "name": "SIVB",
+      "bottom_m": 68.4,
+      "top_m": 85.6,
+      "note": "Third stage + Instrument Unit: one J-2, restarts for TLI"
+    },
+    {
+      "name": "SLA",
+      "bottom_m": 85.6,
+      "top_m": 94.2,
+      "note": "Spacecraft LM Adapter panels, open after TLI"
+    },
+    {
+      "name": "ServiceModule",
+      "bottom_m": 91.4,
+      "top_m": 98.1,
+      "note": "Apollo Service Module with the SPS engine"
+    },
+    {
+      "name": "CommandModule",
+      "bottom_m": 98.1,
+      "top_m": 101.6,
+      "note": "Apollo Command Module"
+    }
+  ]
+}

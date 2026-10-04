@@ -20,6 +20,13 @@ public sealed class AssemblyViewCamera : MonoBehaviour
     private bool zoomInitialized;
     private Rocket trackedRocket;
     private GUIStyle rocketMarkerStyle;
+    // Map view (zoomed out to the whole planet) orbits Earth's centre with
+    // its own angles, in the planet's frame: mapPitch is latitude-like
+    // (-89..89), mapYaw longitude-like. Kept separate from the close-up
+    // yaw/pitch, which are relative to the launch site's local frame.
+    private float mapYaw, mapPitch;
+    private float previousOrbitalBlend;
+    private const float MapStart = 2000000f, MapFull = 16000000f;
 
     public void SetPlanet(PlanetBody value) => planet = value;
 
@@ -59,17 +66,26 @@ public sealed class AssemblyViewCamera : MonoBehaviour
             yaw = 35f;
             pitch = 25f;
         }
+        var inMap = OrbitalBlend(distance) > .5f;
         if (Input.GetMouseButton(1))
         {
-            yaw += Input.GetAxis("Mouse X") * 3f;
-            pitch = Mathf.Clamp(pitch - Input.GetAxis("Mouse Y") * 3f, -85f, 89f);
+            if (inMap)
+            {
+                mapYaw += Input.GetAxis("Mouse X") * 3f;
+                mapPitch = Mathf.Clamp(mapPitch - Input.GetAxis("Mouse Y") * 3f, -89f, 89f);
+            }
+            else
+            {
+                yaw += Input.GetAxis("Mouse X") * 3f;
+                pitch = Mathf.Clamp(pitch - Input.GetAxis("Mouse Y") * 3f, -85f, 89f);
+            }
         }
         if (!RocketAssemblyController.IsPointerOverPanel())
         {
             var wheel=Input.mouseScrollDelta.y;
             desiredDistance = Mathf.Clamp(desiredDistance * Mathf.Exp(-wheel * 0.2f),
-                12f, planet != null ? 20000000f : 160f);
-            if (Input.GetMouseButton(2))
+                12f, planet != null ? 40000000f : 160f);
+            if (Input.GetMouseButton(2) && !inMap)
                 PanFocus(new Vector2(Input.GetAxis("Mouse X"),Input.GetAxis("Mouse Y")));
         }
         // Interpolate in logarithmic space because the view spans metres to
@@ -182,17 +198,21 @@ public sealed class AssemblyViewCamera : MonoBehaviour
         }
     }
 
+    // 0 = close-up camera around the site/rocket, 1 = map view around Earth,
+    // eased so the hand-over between the two has no visible kink.
+    private float OrbitalBlend(float atDistance) =>
+        planet != null && transform.parent != null
+            ? Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(MapStart, MapFull, atDistance)) : 0f;
+
     public void ApplyPose()
     {
         InitializeZoom();
-        var orbitalBlend = planet != null ? Mathf.InverseLerp(2000000f, 16000000f, distance) : 0f;
-        var rotation = Quaternion.Euler(Mathf.Lerp(pitch, 75f, orbitalBlend), yaw, 0f);
+        var orbitalBlend = OrbitalBlend(distance);
+        var rotation = Quaternion.Euler(pitch, yaw, 0f);
         var focus = target;
         var scale = transform.parent != null ? transform.parent.lossyScale.x : 1f;
         if (planet != null && transform.parent != null)
         {
-            var center = transform.parent.InverseTransformPoint(planet.transform.position);
-            focus = Vector3.Lerp(target, center, Mathf.InverseLerp(2000000f, 16000000f, distance));
 
             // distance is the camera's zoom/orbit distance from its focus
             // point (metres) - while tracking a launched rocket, the camera
@@ -236,7 +256,9 @@ public sealed class AssemblyViewCamera : MonoBehaviour
                 (planet.Radius + groundProximity) * (planet.Radius + groundProximity) -
                 planet.Radius * planet.Radius));
             var neededFarMeters = Mathf.Max(distance * 3f, (groundProximity + horizonMeters) * 1.5f);
-            camera.farClipPlane = Mathf.Min(neededFarMeters, planet.Radius * 4f) * scale;
+            // Never further than the far side of the planet from the map
+            // camera (which sits at radius + distance from the centre).
+            camera.farClipPlane = Mathf.Min(neededFarMeters, planet.Radius * 2.2f + distance * 1.1f) * scale;
             camera.nearClipPlane = Mathf.Max(
                 Mathf.Clamp(distance * .00001f, .05f, 20000f) * scale,
                 camera.farClipPlane * .00001f);
@@ -253,9 +275,29 @@ public sealed class AssemblyViewCamera : MonoBehaviour
         }
         transform.localPosition = focus - rotation * Vector3.forward * distance;
         transform.localRotation = rotation;
-        if (planet != null && orbitalBlend > 0f)
-            transform.rotation = Quaternion.Slerp(transform.rotation,
-                Quaternion.LookRotation(planet.transform.position-transform.position, Vector3.up), orbitalBlend);
+        if (orbitalBlend > 0f)
+        {
+            var center = planet.transform.position;
+            // Entering map view: start the orbit directly above where the
+            // close-up camera already is, so zooming out has no jump.
+            if (previousOrbitalBlend <= 0f)
+            {
+                var up = (transform.position - center).normalized;
+                mapPitch = Mathf.Asin(Mathf.Clamp(up.y, -1f, 1f)) * Mathf.Rad2Deg;
+                mapYaw = Mathf.Atan2(-up.x, -up.z) * Mathf.Rad2Deg;
+            }
+            // Orbit Earth's centre at (radius + zoom distance), always looking
+            // at the centre with the orbit's own "up" - no world-up LookAt,
+            // so it can go over the poles without flipping.
+            var orbit = Quaternion.Euler(mapPitch, mapYaw, 0f);
+            var mapPosition = center + orbit * Vector3.back *
+                (planet.Radius * PlanetBody.WorldUnitsPerMeter + distance * scale);
+            var mapRotation = Quaternion.LookRotation(center - mapPosition, orbit * Vector3.up);
+            transform.SetPositionAndRotation(
+                Vector3.Lerp(transform.position, mapPosition, orbitalBlend),
+                Quaternion.Slerp(transform.rotation, mapRotation, orbitalBlend));
+        }
+        previousOrbitalBlend = orbitalBlend;
 
         // Zoomed out, the near clip above stays a fraction of a kilometre
         // against a far clip of tens of thousands - on OpenGL's 24-bit depth
@@ -326,7 +368,9 @@ public sealed class AssemblyViewCamera : MonoBehaviour
         var heading = new GUIStyle(GUI.skin.label) { fontSize = 22 };
         heading.normal.textColor = Color.white;
         GUI.Label(new Rect(24, 18, 520, 36), "KENYA  /  ROCKET ASSEMBLY", heading);
-        GUI.Label(new Rect(24, 53, 980, 25), "Right drag: orbit   •   Scroll: zoom   •   Hold mouse wheel: move focus freely   •   V: Earth / site   •   F: assembly view");
+        GUI.Label(new Rect(24, 53, 980, 25), OrbitalBlend(distance) > .5f
+            ? "Map view   •   Right drag: rotate Earth (any direction, over the poles)   •   Scroll: zoom   •   V: back to site"
+            : "Right drag: orbit   •   Scroll: zoom   •   Hold mouse wheel: move focus freely   •   V: Earth / site   •   F: assembly view");
         if (planet != null)
         {
             if (GUI.Button(new Rect(24, 86, 145, 32), "Earth / Planet")) desiredDistance=16000000f;

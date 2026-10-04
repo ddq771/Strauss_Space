@@ -3,6 +3,18 @@ to engine_asset.py, same geometry helpers, adapted export convention: the
 object origin sits at the vertical CENTRE of the stack (matching Rocket.cs's
 own centred hull pivot, so an imported body drops in without new offset
 math), not at the top like the engine mount-point convention.
+
+Staging: call stage('Name') before building each separable piece. Every
+part made after it belongs to that stage; its merged meshes are exported as
+"<Stage>__<material>" so the stage survives in the FBX. Stage extents
+(metres from the base of the stack) go to <Key>_stages.json in
+Assets/Resources/RocketBodies, in the order the stages were declared -
+declare them in separation order (first to drop away first).
+RocketBodySetup reads that file and groups each stage's meshes under a
+"Stage_<Stage>" object (pivot at the stage's base) in the prefab, so a
+future staging system can detach a stage by its transform. (The grouping
+happens in Unity, not here: nesting meshes under empties breaks the FBX
+exporter's baked axis conversion.)
 """
 import bpy
 import math
@@ -16,6 +28,15 @@ scene = bpy.context.scene
 scene.unit_settings.system = 'METRIC'
 scene.unit_settings.scale_length = 1.0
 parts = []
+stages = []
+current_stage = None
+
+def stage(name, note=''):
+    """Start a new separable stage; later parts belong to it."""
+    global current_stage
+    current_stage = name
+    if all(s['name'] != name for s in stages):
+        stages.append({'name': name, 'note': note})
 
 def material(name, color, metallic, roughness):
     m = bpy.data.materials.new(name)
@@ -32,6 +53,7 @@ def finish(obj, name, mat):
     obj.data.materials.append(mat)
     if obj.type == 'MESH':
         for p in obj.data.polygons: p.use_smooth = True
+    obj['stage'] = current_stage or 'Main'
     parts.append(obj)
     return obj
 
@@ -104,6 +126,74 @@ def wedge(name,location,size,rotation,mat):
     bpy.ops.object.mode_set(mode='OBJECT')
     return finish(obj,name,mat)
 
+def nozzle(name, x, y, top, length, r_top, r_bottom, mat, vertices=24):
+    """Engine bell hanging down from 'top': narrow throat flaring to the exit."""
+    return cylinder(name, (x, y, top), (x, y, top - length), r_top, mat, vertices, radius2=r_bottom)
+
+def prism(name, outline, thickness, mat):
+    """A flat plate from an (x, z) outline, extruded along y - fins, wings."""
+    n = len(outline); h = thickness / 2
+    verts = [(x, -h, z) for x, z in outline] + [(x, h, z) for x, z in outline]
+    faces = [tuple(range(n)), tuple(range(2 * n - 1, n - 1, -1))]
+    faces += [(i, (i + 1) % n, (i + 1) % n + n, i + n) for i in range(n)]
+    mesh = bpy.data.meshes.new(name); mesh.from_pydata(verts, [], faces); mesh.update()
+    obj = bpy.data.objects.new(name, mesh); scene.collection.objects.link(obj)
+    return finish(obj, name, mat)
+
+def lathe_arc(name, profile, mat, a0, a1, n=48):
+    """Part of a lathe: the profile swept only from angle a0 to a1 (radians).
+    Fairing halves, painted panels, a heat shield over one side."""
+    verts = [(r * math.cos(a0 + (a1 - a0) * j / n), r * math.sin(a0 + (a1 - a0) * j / n), z)
+             for r, z in profile for j in range(n + 1)]
+    faces = []
+    for i in range(len(profile) - 1):
+        for j in range(n):
+            a = i * (n + 1) + j; b = a + n + 1
+            faces.append((a, a + 1, b + 1, b))
+    mesh = bpy.data.meshes.new(name); mesh.from_pydata(verts, [], faces); mesh.update()
+    obj = bpy.data.objects.new(name, mesh); scene.collection.objects.link(obj)
+    return finish(obj, name, mat)
+
+def loft(name, sections, mat, n=48, close_ends=True):
+    """Body through cross-sections along z: (z, cx, cy, half_width,
+    half_height, roundness). roundness 2 = ellipse, higher = boxier
+    (superellipse) - fuselages that aren't round."""
+    verts = []
+    for z, cx, cy, ax, ay, e in sections:
+        for j in range(n):
+            t = 2 * math.pi * j / n
+            c, s_ = math.cos(t), math.sin(t)
+            x = cx + ax * math.copysign(abs(c) ** (2 / e), c)
+            y = cy + ay * math.copysign(abs(s_) ** (2 / e), s_)
+            verts.append((x, y, z))
+    faces = []
+    for i in range(len(sections) - 1):
+        for j in range(n):
+            a = i * n + j; b = i * n + (j + 1) % n
+            faces.append((a, b, b + n, a + n))
+    if close_ends:
+        faces.append(tuple(reversed(range(n))))
+        last = (len(sections) - 1) * n
+        faces.append(tuple(range(last, last + n)))
+    mesh = bpy.data.meshes.new(name); mesh.from_pydata(verts, [], faces); mesh.update()
+    obj = bpy.data.objects.new(name, mesh); scene.collection.objects.link(obj)
+    return finish(obj, name, mat)
+
+def paint_faces(obj, mat, test):
+    """Give faces whose (centre, normal) pass test() a second material -
+    e.g. black thermal tiles on the side of a body facing one way."""
+    obj.data.materials.append(mat)
+    index = len(obj.data.materials) - 1
+    for poly in obj.data.polygons:
+        if test(obj.matrix_world @ poly.center, (obj.matrix_world.to_3x3() @ poly.normal).normalized()):
+            poly.material_index = index
+    return obj
+
+def place(objs, matrix):
+    """Move already-built parts by a transform (e.g. a booster built upright
+    at the origin, then leaned and swung into position)."""
+    for o in objs: o.matrix_world = matrix @ o.matrix_world
+
 def complete(here,key,height,ortho,camera=None,label=None):
     """Bake, export, render, then reimport and validate the FBX. Origin is
     the vertical centre of [0,height] as authored (matches Rocket.cs's own
@@ -116,15 +206,17 @@ def complete(here,key,height,ortho,camera=None,label=None):
     bpy.ops.object.convert(target='MESH')
     groups={}
     for obj in list(scene.objects):
-        if obj.type=='MESH': groups.setdefault(obj.data.materials[0].name,[]).append(obj)
+        if obj.type=='MESH':
+            groups.setdefault((obj.get('stage','Main'),obj.data.materials[0].name),[]).append(obj)
     meshes=[]
-    for name,objs in groups.items():
+    for (stage_name,name),objs in groups.items():
         bpy.ops.object.select_all(action='DESELECT')
         for obj in objs: obj.select_set(True)
         bpy.context.view_layer.objects.active=objs[0]
         if len(objs)>1: bpy.ops.object.join()
         obj=bpy.context.object
-        obj.name='Geometry_'+name
+        obj['stage']=stage_name
+        obj.name=stage_name+'__'+name
         bpy.ops.object.transform_apply(location=False,rotation=True,scale=True)
         bpy.ops.object.mode_set(mode='EDIT')
         bpy.ops.mesh.select_all(action='SELECT')
@@ -137,6 +229,16 @@ def complete(here,key,height,ortho,camera=None,label=None):
     root['description']=(label or key)+' visual approximation; not measured engineering CAD'
     root['units']='metres'
     for obj in meshes: obj.parent=root
+    bpy.context.view_layer.update()
+    stage_info=[]
+    for stage_name in [s['name'] for s in stages] or ['Main']:
+        members=[o for o in meshes if o.get('stage')==stage_name]
+        if not members: continue
+        pts=[o.matrix_world@Vector(c) for o in members for c in o.bound_box]
+        note=next((s['note'] for s in stages if s['name']==stage_name),'')
+        stage_info.append({'name':stage_name,
+                           'bottom_m':round(min(p.z for p in pts)+height/2,3),
+                           'top_m':round(max(p.z for p in pts)+height/2,3),'note':note})
     origin=bpy.data.objects.new('OriginPoint',None)
     scene.collection.objects.link(origin)
     origin.parent=root
@@ -145,6 +247,9 @@ def complete(here,key,height,ortho,camera=None,label=None):
     for obj in meshes+[root,origin]: obj.select_set(True)
     bpy.context.view_layer.objects.active=root
     asset=out/(key+'_Body.fbx')
+    resources=here.parents[1]/'Assets/Resources/RocketBodies'
+    resources.mkdir(parents=True,exist_ok=True)
+    (resources/(key+'_stages.json')).write_text(json.dumps({'key':key,'height_m':height,'stages':stage_info},indent=2)+'\n')
     bpy.ops.export_scene.fbx(filepath=str(asset),use_selection=True,
         object_types={'MESH','EMPTY'},axis_forward='-Z',axis_up='Y',
         apply_unit_scale=True,apply_scale_options='FBX_SCALE_UNITS',
@@ -153,7 +258,8 @@ def complete(here,key,height,ortho,camera=None,label=None):
     points=[obj.matrix_world@Vector(c) for obj in meshes for c in obj.bound_box]
     size=[max(p[i] for p in points)-min(p[i] for p in points) for i in range(3)]
     stats={'triangles':sum(sum(len(p.vertices)-2 for p in obj.data.polygons) for obj in meshes),
-           'mesh_objects':len(meshes),'materials':len(groups),
+           'mesh_objects':len(meshes),'materials':len({m for _,m in groups}),
+           'stages':[s['name'] for s in stage_info],
            'bounds_m':dict(zip('xyz',[round(x,4) for x in size])),
            'note':'Visual approximation; proportions and details are approximate, not scaled CAD.'}
     (here/'model_stats.json').write_text(json.dumps(stats,indent=2)+'\n')

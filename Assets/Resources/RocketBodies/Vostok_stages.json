@@ -1,0 +1,54 @@
+{
+  "key": "Vostok",
+  "height_m": 38.4,
+  "stages": [
+    {
+      "name": "Booster_B",
+      "bottom_m": 0.118,
+      "top_m": 21.168,
+      "note": "Strap-on Block B, separates at ~2 min"
+    },
+    {
+      "name": "Booster_V",
+      "bottom_m": 0.118,
+      "top_m": 21.168,
+      "note": "Strap-on Block V, separates at ~2 min"
+    },
+    {
+      "name": "Booster_G",
+      "bottom_m": 0.118,
+      "top_m": 21.168,
+      "note": "Strap-on Block G, separates at ~2 min"
+    },
+    {
+      "name": "Booster_D",
+      "bottom_m": 0.118,
+      "top_m": 21.168,
+      "note": "Strap-on Block D, separates at ~2 min"
+    },
+    {
+      "name": "Shroud",
+      "bottom_m": 31.5,
+      "top_m": 38.4,
+      "note": "Payload fairing, jettisoned during the Block A burn"
+    },
+    {
+      "name": "Core",
+      "bottom_m": 0.5,
+      "top_m": 28.45,
+      "note": "Block A sustainer, burns from liftoff; drops after Block E ignites"
+    },
+    {
+      "name": "BlockE",
+      "bottom_m": 27.4,
+      "top_m": 31.5,
+      "note": "Upper stage, RD-0109; fires through the truss"
+    },
+    {
+      "name": "Spacecraft",
+      "bottom_m": 31.55,
+      "top_m": 35.5,
+      "note": "Vostok 3KA: 2.3 m descent sphere on its instrument module"
+    }
+  ]
+}

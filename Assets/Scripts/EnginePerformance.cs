@@ -49,9 +49,57 @@ public static class EnginePerformance
             // the main chambers, the same simplification already used for
             // RD-180's twin chambers above. No imported model exists for
             // this one - see ProceduralEngine/EngineCatalogSetup.
-            case "RD107":p=new EngineParameters{dryMass=1250,vacuumThrust=1019700,vacuumIsp=315.6f,mixtureRatio=2.6f,nozzleCount=4,source="Astronautix RD-107 reference; verniers omitted",dataStatus="Published performance / simplified nozzle count"};p.exitDiameter=CalibratedDiameter(p.vacuumThrust,838500,4);return p;
+            // Vostok-era 8D74K: 1,000 kN vacuum / 821 kN sea level.
+            case "RD107":p=new EngineParameters{dryMass=1155,vacuumThrust=1000000,vacuumIsp=313,mixtureRatio=2.47f,nozzleCount=4,source="RD-107 8D74K (Vostok-K strap-ons); verniers omitted",dataStatus="Published performance / simplified nozzle count"};p.exitDiameter=CalibratedDiameter(p.vacuumThrust,821000,4);return p;
+            // RD-108 8D75K, the R-7 core (Block A) sustainer: 941 kN vacuum /
+            // 745 kN sea level. Same four-chamber layout as RD-107, with four
+            // verniers (omitted here). Used as a preset's core engine only -
+            // it has no catalog model of its own.
+            case "RD108":p=new EngineParameters{dryMass=1278,vacuumThrust=941000,vacuumIsp=315,mixtureRatio=2.39f,nozzleCount=4,source="RD-108 8D75K (Vostok-K core); verniers omitted",dataStatus="Published performance / simplified nozzle count"};p.exitDiameter=CalibratedDiameter(p.vacuumThrust,745000,4);return p;
             default:return null;
         }
     }
+    /// <summary>
+    /// A solid rocket motor: its own propellant grain, lit once and burned to
+    /// depletion - no throttle, no shutdown. Thrust follows the grain's
+    /// designed burn profile (thrustProfile, a fraction of peak vacuum thrust
+    /// against seconds since ignition), minus back-pressure on the nozzle exit.
+    /// </summary>
+    public sealed class SolidMotor
+    {
+        public string title;
+        public double peakVacuumThrust, vacuumIsp, exitArea, propellantMass, inertMass;
+        public double[] profileTime, profileFraction;
+        public string source;
+
+        public double Fraction(double seconds)
+        {
+            if(seconds<=profileTime[0])return profileFraction[0];
+            for(var i=1;i<profileTime.Length;i++)
+                if(seconds<=profileTime[i])
+                    return profileFraction[i-1]+(profileFraction[i]-profileFraction[i-1])*(seconds-profileTime[i-1])/(profileTime[i]-profileTime[i-1]);
+            return profileFraction[^1];
+        }
+        public double MassFlow(double seconds) => Fraction(seconds)*peakVacuumThrust/(G0*vacuumIsp);
+        public double Thrust(double seconds,double pressure) => Math.Max(0,Fraction(seconds)*peakVacuumThrust-pressure*exitArea);
+    }
+
+    public static SolidMotor Solid(string id)
+    {
+        switch(id)
+        {
+            // Space Shuttle SRB (RSRM): ~12.5 MN each at sea level at liftoff,
+            // 503 t of PBAN propellant, 87 t inert, Isp 268.6 s vacuum, 3.8 m
+            // nozzle exit. The grain is shaped to drop thrust to ~72% through
+            // Max Q (~50-65 s), recover, then tail off at ~124 s.
+            case "SRB":return new SolidMotor{title="Shuttle SRB",peakVacuumThrust=13650000,vacuumIsp=268.6,
+                exitArea=Math.PI*3.8*3.8/4,propellantMass=503000,inertMass=87000,
+                profileTime=new double[]{0,20,50,65,80,105,115,124},
+                profileFraction=new[]{1.0,1.02,.75,.72,.83,.80,.45,0},
+                source="Space Shuttle RSRM; thrust profile approximated from published thrust-time curve"};
+            default:return null;
+        }
+    }
+
     private static float CalibratedDiameter(double vacuum,double sea,int count)=>(float)Math.Sqrt(4*(vacuum-sea)/(101325*Math.PI*count));
 }

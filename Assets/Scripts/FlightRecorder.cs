@@ -15,12 +15,12 @@ using UnityEngine;
 ///   drag          N     aerodynamic drag force
 ///   torque        N·m   net torque on the vehicle, from its angular
 ///                       acceleration and inertia (gimbal/thrust offset)
-///   fuel          kg    fuel + oxidizer remaining
+///   fuel          kg    fuel + oxidizer remaining, plus any solid
+///                       boosters' propellant
 ///   mass          kg    total vehicle mass
 ///   time          s     time since launch
 ///   temperature   °C    outside air temperature, US Standard Atmosphere
-///                       1976 (display only - the drag model itself stays
-///                       isothermal at 15 °C, see RocketFlightModel)
+///                       1976 - the same model the drag uses
 ///   tilt          deg   angle between the rocket's axis and local vertical
 ///   G-force       g     felt acceleration (thrust + drag, not gravity):
 ///                       1 g sitting on the pad, 0 g coasting
@@ -150,10 +150,10 @@ public sealed class FlightRecorder : MonoBehaviour
             body.isKinematic ? 0 : acceleration.magnitude,
             flight.Drag,
             body.isKinematic ? 0 : Torque(),
-            flight.FuelRemaining + flight.OxidizerRemaining,
+            flight.FuelRemaining + flight.OxidizerRemaining + flight.SolidPropellant,
             flight.TotalMass,
             elapsed,
-            AirTemperatureCelsius(altitude),
+            StandardAtmosphere.TemperatureKelvin(altitude) - 273.15,
             Vector3.Angle(transform.up, up),
             felt.magnitude / StandardGravity,
         };
@@ -171,20 +171,5 @@ public sealed class FlightRecorder : MonoBehaviour
         var inertia = body.inertiaTensor;
         var torque = Vector3.Scale(inertia, alpha) + Vector3.Cross(omega, Vector3.Scale(inertia, omega));
         return torque.magnitude / (PlanetBody.WorldUnitsPerMeter * PlanetBody.WorldUnitsPerMeter);
-    }
-
-    // US Standard Atmosphere 1976 temperature layers up to 86 km, held
-    // constant above (where "air temperature" stops meaning much).
-    private static readonly double[] LayerBaseKm = { 0, 11, 20, 32, 47, 51, 71, 86 };
-    private static readonly double[] LayerBaseK = { 288.15, 216.65, 216.65, 228.65, 270.65, 270.65, 214.65, 186.87 };
-    private static readonly double[] LayerLapseKPerKm = { -6.5, 0, 1, 2.8, 0, -2.8, -2, 0 };
-
-    public static double AirTemperatureCelsius(double altitudeMetres)
-    {
-        var km = Math.Max(0, altitudeMetres / 1000);
-        var layer = LayerBaseKm.Length - 1;
-        while (layer > 0 && km < LayerBaseKm[layer]) layer--;
-        var kelvin = LayerBaseK[layer] + LayerLapseKPerKm[layer] * (km - LayerBaseKm[layer]);
-        return kelvin - 273.15;
     }
 }

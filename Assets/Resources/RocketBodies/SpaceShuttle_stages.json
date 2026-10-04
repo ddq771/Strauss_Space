@@ -1,0 +1,30 @@
+{
+  "key": "SpaceShuttle",
+  "height_m": 56.1,
+  "stages": [
+    {
+      "name": "SRB_Left",
+      "bottom_m": 0.0,
+      "top_m": 45.6,
+      "note": "Solid Rocket Booster, separates at ~2 min"
+    },
+    {
+      "name": "SRB_Right",
+      "bottom_m": 0.0,
+      "top_m": 45.6,
+      "note": "Solid Rocket Booster, separates at ~2 min"
+    },
+    {
+      "name": "ExternalTank",
+      "bottom_m": 9.2,
+      "top_m": 56.1,
+      "note": "External Tank, released after main engine cutoff (~8.5 min)"
+    },
+    {
+      "name": "Orbiter",
+      "bottom_m": 5.5,
+      "top_m": 45.1,
+      "note": "Orbiter: 3 RS-25 main engines + 2 OMS engines"
+    }
+  ]
+}

@@ -72,6 +72,10 @@ public sealed class Rocket : MonoBehaviour
     public bool EngineEnabled => engineEnabled;
     public float LaunchLatitudeDegrees => launchLatitudeDegrees;
     public float LaunchLongitudeDegrees => launchLongitudeDegrees;
+    // Base of the whole vehicle (engine bells included) in local units - where
+    // a preset's body model, which carries its own engines, produces thrust.
+    public float BodyBaseLocalY => -(bodyHeight + noseHeight + engineHeight) * .5f * PlanetBody.WorldUnitsPerMeter;
+    public float BodyDiameter => bodyDiameter;
     public float AssemblyMountLocalY =>
         (engineHeight - (bodyHeight + noseHeight + engineHeight) * .5f) * PlanetBody.WorldUnitsPerMeter;
 
