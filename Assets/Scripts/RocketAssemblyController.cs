@@ -259,6 +259,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
                 trajectory.WillImpact?"Suborbital · impact in "+TrajectoryDisplay.Clock(trajectory.TimeToImpact):"Suborbital");
         }
         GUILayout.Label("Speed: "+flight.Speed.ToString("F1")+" m/s · Mach "+flight.Mach.ToString("F2"));
+        GUILayout.Label(new GUIContent("Orbital speed: "+flight.OrbitalSpeed.ToString("F0")+" m/s", "Speed relative to the stars: ground speed plus Earth's rotation (~463 m/s eastward at the equator). ~7,800 m/s holds a low orbit."));
         GUILayout.Label("Pressure: "+(flight.Pressure/1000).ToString("F1")+" kPa · Air: "+(flight.AirTemperature-273.15).ToString("F0")+" °C");
         GUILayout.Label(new GUIContent("Vertical speed: "+flight.VerticalSpeed.ToString("+0.0;-0.0;0.0")+" m/s", "Radial velocity relative to the planet: positive ascending, negative descending."));
         GUILayout.Label("Horizontal speed: "+flight.HorizontalSpeed.ToString("F1")+" m/s");

@@ -244,6 +244,35 @@ public sealed class RocketFlightModel : MonoBehaviour
         body.AddForce(direction*(float)(Drag*PlanetBody.WorldUnitsPerMeter),ForceMode.Force);
     }
 
+    // The scene is fixed to the turning Earth - a rotating frame - so free
+    // flight needs the Coriolis (−2ω×v) and centrifugal (−ω×(ω×r))
+    // accelerations. Together they give a launch the ground's eastward speed
+    // (~463 m/s at the equator) and make orbits curve correctly as seen from
+    // the ground. Velocities here are relative to the ground - and to the
+    // air, which turns with Earth, so drag needs no correction.
+    private void ApplyRotatingFrame(Rigidbody body)
+    {
+        if(planet==null || body.isKinematic)return;
+        var spin=planet.SpinVector;
+        if(spin==Vector3.zero)return;
+        var r=(body.worldCenterOfMass-planet.transform.position)/PlanetBody.WorldUnitsPerMeter;
+        var v=body.linearVelocity/PlanetBody.WorldUnitsPerMeter;
+        var a=-2f*Vector3.Cross(spin,v)-Vector3.Cross(spin,Vector3.Cross(spin,r));
+        body.AddForce(a*PlanetBody.WorldUnitsPerMeter,ForceMode.Acceleration);
+    }
+
+    /// <summary>Speed relative to the stars (ground speed plus Earth's rotation) - what orbits care about.</summary>
+    public double OrbitalSpeed
+    {
+        get
+        {
+            if(planet==null)return Speed;
+            var r=(transform.position-planet.transform.position)/PlanetBody.WorldUnitsPerMeter;
+            var v=GetComponent<Rigidbody>().linearVelocity/PlanetBody.WorldUnitsPerMeter;
+            return (v+Vector3.Cross(planet.SpinVector,r)).magnitude;
+        }
+    }
+
     // Cross-section the drag acts on: the body's own (collider) radius.
     private CapsuleCollider frontalCapsule;
     private double FrontalArea
@@ -318,6 +347,7 @@ public sealed class RocketFlightModel : MonoBehaviour
         // during powered flight (Step() only runs with the engine firing).
         ApplyDrag(GetComponent<Rigidbody>());
         BurnSolids(GetComponent<Rigidbody>(),Time.fixedDeltaTime);
+        ApplyRotatingFrame(GetComponent<Rigidbody>());
         var current=transform.position;
         if(!trackingImpact){previousPosition=current;trackingImpact=true;}
         var center=planet.transform.position;

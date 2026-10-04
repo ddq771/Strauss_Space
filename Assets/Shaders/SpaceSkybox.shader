@@ -45,6 +45,9 @@ Shader "Skybox/ProceduralStarfield"
             // radius (radians) - 0.27° from Earth's distance, varying a few
             // percent between perihelion and aphelion.
             float4 _SolarDirection;
+            // Earth's rotation angle (SolarSystem): the stars are fixed in
+            // inertial space, so they turn across the Earth-fixed sky.
+            float _SkyAngle;
 
             v2f vert(appdata v)
             {
@@ -87,7 +90,11 @@ Shader "Skybox/ProceduralStarfield"
 
             fixed4 frag(v2f i) : SV_Target
             {
-                float3 dir = normalize(i.dir);
+                float3 viewDir = normalize(i.dir);
+                // Earth-fixed view direction -> inertial (add the rotation to
+                // its longitude) for the stars and nebulae.
+                float ca = cos(_SkyAngle), sa = sin(_SkyAngle);
+                float3 dir = float3(viewDir.x * ca - viewDir.z * sa, viewDir.y, viewDir.x * sa + viewDir.z * ca);
 
                 float t = saturate(dir.y * 0.5 + 0.5);
                 fixed3 col = lerp(_SkyColorBottom.rgb, _SkyColorTop.rgb, t);
@@ -117,7 +124,7 @@ Shader "Skybox/ProceduralStarfield"
                 float sunRadius = max(_SolarDirection.w, 1e-4);
                 if (dot(_SolarDirection.xyz, _SolarDirection.xyz) > 0.5)
                 {
-                    float angle = acos(saturate(dot(dir, normalize(_SolarDirection.xyz))));
+                    float angle = acos(saturate(dot(viewDir, normalize(_SolarDirection.xyz))));
                     float r = angle / sunRadius;
                     if (r < 1)
                     {

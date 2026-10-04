@@ -27,6 +27,9 @@ public sealed class AssemblyViewCamera : MonoBehaviour
     private float mapYaw, mapPitch;
     private float previousOrbitalBlend;
     private const float MapStart = 2000000f, MapFull = 16000000f;
+    // Zoomed out further still, the view hands over from Earth to the Sun:
+    // the solar system view, where Earth's orbit (1 AU) fits on screen.
+    private const float SolarStart = 2e9f, SolarFull = 1.5e11f, MaxDistance = 6e11f;
 
     public void SetPlanet(PlanetBody value) => planet = value;
 
@@ -84,7 +87,7 @@ public sealed class AssemblyViewCamera : MonoBehaviour
         {
             var wheel=Input.mouseScrollDelta.y;
             desiredDistance = Mathf.Clamp(desiredDistance * Mathf.Exp(-wheel * 0.2f),
-                12f, planet != null ? 40000000f : 160f);
+                12f, planet != null ? MaxDistance : 160f);
             if (Input.GetMouseButton(2) && !inMap)
                 PanFocus(new Vector2(Input.GetAxis("Mouse X"),Input.GetAxis("Mouse Y")));
         }
@@ -198,6 +201,17 @@ public sealed class AssemblyViewCamera : MonoBehaviour
         }
     }
 
+    public float MapBlend => OrbitalBlend(distance);
+    /// <summary>0 = centred on Earth, 1 = solar system view centred on the Sun.</summary>
+    public float SolarBlend =>
+        planet != null && transform.parent != null && SolarSystem.Instance != null
+            ? Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(SolarStart, SolarFull, distance)) : 0f;
+
+    // Map view turns with the stars, not with Earth: Earth spins underneath
+    // it and the solar system view doesn't swing round once a day.
+    private float InertialYawOffset =>
+        SolarSystem.Instance != null ? (float)(SolarSystem.Instance.RotationAngleRad * Mathf.Rad2Deg) : 0f;
+
     // 0 = close-up camera around the site/rocket, 1 = map view around Earth,
     // eased so the hand-over between the two has no visible kink.
     private float OrbitalBlend(float atDistance) =>
@@ -284,18 +298,31 @@ public sealed class AssemblyViewCamera : MonoBehaviour
             {
                 var up = (transform.position - center).normalized;
                 mapPitch = Mathf.Asin(Mathf.Clamp(up.y, -1f, 1f)) * Mathf.Rad2Deg;
-                mapYaw = Mathf.Atan2(-up.x, -up.z) * Mathf.Rad2Deg;
+                mapYaw = Mathf.Atan2(-up.x, -up.z) * Mathf.Rad2Deg - InertialYawOffset;
             }
+            var solar = SolarBlend;
+            if (solar > 0f) center = Vector3.Lerp(center, SolarSystem.Instance.SunWorldPosition, solar);
             // Orbit Earth's centre at (radius + zoom distance), always looking
             // at the centre with the orbit's own "up" - no world-up LookAt,
             // so it can go over the poles without flipping.
-            var orbit = Quaternion.Euler(mapPitch, mapYaw, 0f);
+            var orbit = Quaternion.Euler(mapPitch, mapYaw + InertialYawOffset, 0f);
             var mapPosition = center + orbit * Vector3.back *
                 (planet.Radius * PlanetBody.WorldUnitsPerMeter + distance * scale);
             var mapRotation = Quaternion.LookRotation(center - mapPosition, orbit * Vector3.up);
             transform.SetPositionAndRotation(
                 Vector3.Lerp(transform.position, mapPosition, orbitalBlend),
                 Quaternion.Slerp(transform.rotation, mapRotation, orbitalBlend));
+            if (solar > 0f)
+            {
+                // Reach past the far side of Earth's orbit; keep the near clip
+                // well in front of everything (nothing is closer than ~0.1 AU
+                // to a camera this far out).
+                var camera = GetComponent<Camera>();
+                var au = (float)(SolarSystem.AstronomicalUnit * PlanetBody.WorldUnitsPerMeter);
+                var toCentre = Vector3.Distance(transform.position, center);
+                camera.farClipPlane = Mathf.Max(camera.farClipPlane, toCentre + au * 1.2f);
+                camera.nearClipPlane = Mathf.Max(camera.nearClipPlane, Mathf.Min(toCentre * .05f, camera.farClipPlane * .0001f));
+            }
         }
         previousOrbitalBlend = orbitalBlend;
 
@@ -368,12 +395,15 @@ public sealed class AssemblyViewCamera : MonoBehaviour
         var heading = new GUIStyle(GUI.skin.label) { fontSize = 22 };
         heading.normal.textColor = Color.white;
         GUI.Label(new Rect(24, 18, 520, 36), "KENYA  /  ROCKET ASSEMBLY", heading);
-        GUI.Label(new Rect(24, 53, 980, 25), OrbitalBlend(distance) > .5f
+        GUI.Label(new Rect(24, 53, 980, 25), SolarBlend > .5f
+            ? "Solar system view   •   Right drag: rotate   •   Scroll: zoom (in to return to Earth)   •   V: back to site"
+            : OrbitalBlend(distance) > .5f
             ? "Map view   •   Right drag: rotate Earth (any direction, over the poles)   •   Scroll: zoom   •   V: back to site"
             : "Right drag: orbit   •   Scroll: zoom   •   Hold mouse wheel: move focus freely   •   V: Earth / site   •   F: assembly view");
         if (planet != null)
         {
             if (GUI.Button(new Rect(24, 86, 145, 32), "Earth / Planet")) desiredDistance=16000000f;
+            if (SolarSystem.Instance != null && GUI.Button(new Rect(338, 86, 145, 32), "Solar system")) desiredDistance=3e11f;
             if (GUI.Button(new Rect(181, 86, 145, 32), "Assembly site"))
             {
                 target=new Vector3(0,18,0);

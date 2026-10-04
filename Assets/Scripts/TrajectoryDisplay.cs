@@ -16,6 +16,13 @@ using UnityEngine;
 ///    hyperbola past escape speed - followed until the path re-enters the
 ///    atmosphere, where integration takes over again down to impact.
 /// While burning, it is recomputed every frame from the current state.
+///
+/// Earth turns, and the scene is fixed to the ground, so the orbit maths
+/// uses the inertial velocity (ground velocity + Earth's spin) and drag uses
+/// the velocity relative to the turning air. A path that comes down is drawn
+/// relative to the ground - each point shifted by how far Earth will have
+/// turned by then - so the impact marker is where it really lands; a closed
+/// orbit is drawn as its fixed ellipse (as at this moment), like KSP.
 /// </summary>
 [RequireComponent(typeof(Rocket), typeof(RocketFlightModel))]
 public sealed class TrajectoryDisplay : MonoBehaviour
@@ -43,7 +50,8 @@ public sealed class TrajectoryDisplay : MonoBehaviour
     private float nextTrailTime;
     private Camera viewCamera;
     private GUIStyle labelStyle;
-    private double mu, radius;
+    private double mu, radius, spinRate;
+    private Vec spin;
     private Vector3 centre;
 
     // Latest solution, also read by the flight panel.
@@ -153,6 +161,11 @@ public sealed class TrajectoryDisplay : MonoBehaviour
         mu = PlanetBody.UniversalGravitationalConstant * planet.Mass;
         radius = planet.Radius;
         if (v.Length < MinPredictSpeed) { Clear(); return; }
+        // Inertial velocity: what the rocket has relative to the stars.
+        var sv = planet.SpinVector;
+        spin = new Vec(sv.x, sv.y, sv.z);
+        spinRate = planet.RotationRate;
+        v = v + Vec.Cross(spin, r);
 
         // Vacuum orbit from the current state: Pe / escape / orbit status.
         var now = Conic.From(r, v, mu);
@@ -192,7 +205,7 @@ public sealed class TrajectoryDisplay : MonoBehaviour
         else
         {
             ApoapsisAltitude = maxAlt;
-            apWorld = ToWorld(maxAltPoint);
+            apWorld = ToWorld(maxAltPoint, maxAltT);
             TimeToApoapsis = climbing && maxAltT > 0 ? maxAltT : -1;
             showAp = TimeToApoapsis > 0;
         }
@@ -218,14 +231,15 @@ public sealed class TrajectoryDisplay : MonoBehaviour
                 var prevAlt = previous.Length - radius;
                 var f = prevAlt / Math.Max(1e-9, prevAlt - alt);
                 var hit = previous + (r - previous) * f;
-                points.Add(ToWorld(hit));
-                impactWorld = ToWorld(hit);
+                var tHit = t - StepSeconds * (1 - f);
+                points.Add(ToWorld(hit, tHit));
+                impactWorld = ToWorld(hit, tHit);
                 WillImpact = true;
                 TimeToImpact = t - StepSeconds * (1 - f);
                 return true;
             }
-            if (step % 4 == 0) points.Add(ToWorld(r));
-            if (alt >= AtmosphereTop && Vec.Dot(r, v) > 0) { points.Add(ToWorld(r)); return false; }
+            if (step % 4 == 0) points.Add(ToWorld(r, t));
+            if (alt >= AtmosphereTop && Vec.Dot(r, v) > 0) { points.Add(ToWorld(r, t)); return false; }
         }
         return true;
     }
@@ -240,13 +254,16 @@ public sealed class TrajectoryDisplay : MonoBehaviour
         v = v + (k1v + k2v * 2 + k3v * 2 + k4v) * (dt / 6);
     }
 
+    // Inertial acceleration: gravity, plus drag against the velocity
+    // relative to the air (which turns with Earth).
     private Vec Accel(Vec r, Vec v)
     {
         var rl = r.Length;
         var gravity = r * (-mu / (rl * rl * rl));
-        var speed = v.Length;
+        var air = v - Vec.Cross(spin, r);
+        var speed = air.Length;
         var drag = flight.DragDecelerationAt(rl - radius, speed);
-        return speed > 1e-6 ? gravity - v * (drag / speed) : gravity;
+        return speed > 1e-6 ? gravity - air * (drag / speed) : gravity;
     }
 
     // Follows the exact Kepler orbit from (r, v), outside the atmosphere.
@@ -266,7 +283,7 @@ public sealed class TrajectoryDisplay : MonoBehaviour
                 var nu = c.nu0 + (nuEnd - c.nu0) * i / ConicSamples;
                 var dist = c.p / (1 + c.e * Math.Cos(nu));
                 if (dist <= 0 || dist > radius * 30) break;
-                points.Add(ToWorld((c.pHat * Math.Cos(nu) + c.qHat * Math.Sin(nu)) * dist));
+                points.Add(ToWorld((c.pHat * Math.Cos(nu) + c.qHat * Math.Sin(nu)) * dist, t));
             }
             return true;
         }
@@ -275,6 +292,9 @@ public sealed class TrajectoryDisplay : MonoBehaviour
         // around its top), one revolution from here.
         var e0 = c.EccentricAnomaly(c.nu0);
         var prevE = e0;
+        // An orbit that stays clear of the air is drawn as its fixed ellipse;
+        // one that comes back down follows the ground as it turns.
+        var closed = c.a * (1 - c.e) > entry;
         for (var i = 1; i <= ConicSamples; i++)
         {
             var E = e0 + 2 * Math.PI * i / ConicSamples;
@@ -294,17 +314,27 @@ public sealed class TrajectoryDisplay : MonoBehaviour
                 }
                 r = c.Position(hi); v = c.Velocity(hi, mu);
                 t += c.TimeBetween(e0, hi, mu);
-                points.Add(ToWorld(r));
+                points.Add(ToWorld(r, t));
                 return false;
             }
-            points.Add(ToWorld(pos));
+            points.Add(ToWorld(pos, closed ? t : t + c.TimeBetween(e0, E, mu)));
             prevE = E;
         }
         return true;
     }
 
-    private Vector3 ToWorld(Vec metres) =>
-        centre + new Vector3((float)metres.x, (float)metres.y, (float)metres.z) * PlanetBody.WorldUnitsPerMeter;
+    // Inertial point (m from the centre) at 'seconds' from now, to where it
+    // is over the ground in the Earth-fixed scene: Earth will have turned
+    // eastward by spin × time, so the point sits that much further west.
+    // (Planet's north axis is world +Y, as PlanetBody assumes.)
+    private Vector3 ToWorld(Vec metres, double seconds = 0)
+    {
+        var turn = -spinRate * seconds;
+        var c = Math.Cos(turn); var s = Math.Sin(turn);
+        var x = metres.x * c - metres.z * s;
+        var z = metres.x * s + metres.z * c;
+        return centre + new Vector3((float)x, (float)metres.y, (float)z) * PlanetBody.WorldUnitsPerMeter;
+    }
 
     // --- Markers --------------------------------------------------------------
 

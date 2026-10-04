@@ -37,6 +37,21 @@ public sealed class PlanetBody : MonoBehaviour
 
     public float Radius => radius;
     public float Mass => mass;
+
+    // Earth turns once per sidereal day (23 h 56 min 4 s), eastward about its
+    // north (+Y) axis. The scene is fixed to the ground, so it is a rotating
+    // frame: RocketFlightModel adds the Coriolis/centrifugal accelerations,
+    // TrajectoryDisplay converts to inertial for orbits, SolarSystem turns
+    // the Sun and stars around the sky.
+    public const double SiderealDaySeconds = 86164.0905;
+    [SerializeField] private bool rotates = true;
+    public double RotationRate => rotates ? 2 * System.Math.PI / SiderealDaySeconds : 0;
+    /// <summary>
+    /// Angular velocity (rad/s, world axes) such that Vector3.Cross(SpinVector, r)
+    /// is the ground's eastward velocity at offset r from the centre - about
+    /// 463 m/s at the equator.
+    /// </summary>
+    public Vector3 SpinVector => -transform.up * (float)RotationRate;
     public double Gravity => UniversalGravitationalConstant * mass / ((double)radius * radius);
     public double SurfaceGravity => Gravity;
 
