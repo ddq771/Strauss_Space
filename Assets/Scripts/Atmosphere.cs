@@ -95,7 +95,7 @@ public sealed class Atmosphere : MonoBehaviour
         // analytic sphere is always fully covered.
         child.localScale = Vector3.one * (1f + atmosphereHeightKm * 1000f / planet.Radius * 1.05f);
 
-        mesh ??= PlanetBody.BuildUvSphere(longitudeSegments, latitudeSegments, radius: 0.5f);
+        if (mesh == null) mesh = PlanetBody.BuildUvSphere(longitudeSegments, latitudeSegments, radius: 0.5f);
         child.GetComponent<MeshFilter>().sharedMesh = mesh;
         var renderer = child.GetComponent<MeshRenderer>();
         var shader = Shader.Find("Strauss Space/Atmosphere");

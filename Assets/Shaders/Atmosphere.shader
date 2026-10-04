@@ -82,6 +82,7 @@ Shader "Strauss Space/Atmosphere"
             float _RayleighHeight, _MieScatter, _MieHeight, _MieG;
             float _SunIntensity, _Saturation;
             float4 _SunDirection;
+            float4 _MoonPosition;   // MoonBody: world position, radius
             sampler2D _AtmosphereBackground;
             UNITY_DECLARE_DEPTH_TEXTURE(_CameraDepthTexture);
 
@@ -209,7 +210,10 @@ Shader "Strauss Space/Atmosphere"
                 // it, the way the eye's adaptation does.
                 // (Not the Sun's own disc and glow, which outshines the sky.)
                 bool towardSun = dot(dir, sunDir) > cos(0.035);
-                if (!hitsGround && !hasGeometry && !towardSun) transmittance *= saturate(1 - 6 * grey);
+                // ...nor the Moon, which is easily seen by day.
+                bool towardMoon = _MoonPosition.w > 0 &&
+                    dot(dir, normalize(_MoonPosition.xyz - _WorldSpaceCameraPos)) > cos(0.012);
+                if (!hitsGround && !hasGeometry && !towardSun && !towardMoon) transmittance *= saturate(1 - 6 * grey);
                 float3 color = background * transmittance + light;
                 return fixed4(LinearToGammaSpace(saturate(color)), 1);
             }

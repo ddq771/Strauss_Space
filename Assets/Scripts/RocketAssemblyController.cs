@@ -32,6 +32,9 @@ public sealed class RocketAssemblyController : MonoBehaviour
     private static string[] DefaultEngineIds(){var ids=new string[MaxSockets];ids[0]=DefaultEngineId;return ids;}
 
     private RocketFlightModel flight;
+    // Set by automated editor checks so keystrokes typed elsewhere while
+    // the editor has focus can't steer or throttle a test flight.
+    public static bool IgnorePilotInput;
     private float commandedThrottle=1;
     // Set by an explicit Space/Shutdown; while set, raising the throttle
     // doesn't relight the engine (see ApplyThrottle).
@@ -226,7 +229,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         GUILayout.Label("FLIGHT CONTROLS");
         if(mountFrame!=null && mountFrame.CanGimbal)
         {
-            GUILayout.Label("Up/Down or W/S: Pitch. Left/Right or A/D: Yaw. Release to center.",new GUIStyle(GUI.skin.label){wordWrap=true});
+            GUILayout.Label("Engine gimbal deflection (average):",new GUIStyle(GUI.skin.label){wordWrap=true});
             DrawGimbalIndicator("Pitch",flightGimbal.x);
             DrawGimbalIndicator("Yaw",flightGimbal.y);
             GUILayout.Label(flightGimbal.sqrMagnitude<.0001f?"Gimbals centered":"Gimbals deflected");
@@ -237,7 +240,9 @@ public sealed class RocketAssemblyController : MonoBehaviour
                 "enable \"Allow gimballed mounting\" on the frame to steer.",
                 new GUIStyle(GUI.skin.label){wordWrap=true});
         }
-        GUILayout.Label("Shift/Ctrl: throttle up/down. Z: full throttle. X: cut throttle. Space: toggle ignition.",new GUIStyle(GUI.skin.label){wordWrap=true});
+        GUILayout.Label("Shift/Ctrl: throttle up/down. Z: full throttle. X: cut throttle. Space: toggle ignition. W/S/A/D: pitch/yaw. T: SAS.",new GUIStyle(GUI.skin.label){wordWrap=true});
+        GUILayout.Label(new GUIContent(sasEnabled?"SAS: on - keys set turn rate, release to hold attitude":"SAS: off - keys deflect the engines directly",
+            "The flight computer steers by gimballing the engines (each within its real range and speed). No control with the engines off."));
         GUILayout.Label("Throttle: "+(commandedThrottle*100).ToString("F0")+"%");
         var previousThrottle=commandedThrottle;
         commandedThrottle=GUILayout.HorizontalSlider(commandedThrottle,0f,1);
@@ -249,6 +254,17 @@ public sealed class RocketAssemblyController : MonoBehaviour
         if(rocket.Launched && GUILayout.Button("Return to assembly")){TimeWarp.Request(1);pilotShutdown=false;rocket.ReturnToAssembly();Rebuild();view?.ShowAssembly();}
         GUILayout.Label("Mass: "+(flight.TotalMass/1000).ToString("F2")+" t · TWR: "+flight.TWR.ToString("F2"));
         GUILayout.Label((rocket.EngineEnabled?"Thrust: ":"Available thrust: ")+(flight.Thrust/1000).ToString("F1")+" kN");
+        if(flight.HasFlightProgram)
+        {
+            var program="T+"+RocketFlightModel.Clock(flight.MissionTime);
+            if(flight.MecoDone)program+=" · MECO - first stage complete";
+            else
+            {
+                if(flight.ProgramThrottle<.999f)program+=" · throttle limited to "+(flight.ProgramThrottle*100).ToString("F0")+"% (Max Q)";
+                if(flight.MecoTime>0)program+=" · MECO in "+RocketFlightModel.Clock(Mathf.Max(0,flight.MecoTime-flight.MissionTime));
+            }
+            GUILayout.Label(new GUIContent(program,"The real first-stage flight program: throttle schedule, engine shutdowns and main engine cutoff (MECO), timed from liftoff."));
+        }
         GUILayout.Label(new GUIContent("Altitude: "+flight.Altitude.ToString("F1")+" m", "Rocket root height above the spherical planet surface."));
         var trajectory=GetComponent<TrajectoryDisplay>();
         if(trajectory!=null && trajectory.HasOrbit)
@@ -266,6 +282,8 @@ public sealed class RocketAssemblyController : MonoBehaviour
         GUILayout.Label("Pressure: "+(flight.Pressure/1000).ToString("F1")+" kPa · Air: "+(flight.AirTemperature-273.15).ToString("F0")+" °C");
         GUILayout.Label(new GUIContent("Vertical speed: "+flight.VerticalSpeed.ToString("+0.0;-0.0;0.0")+" m/s", "Radial velocity relative to the planet: positive ascending, negative descending."));
         GUILayout.Label("Horizontal speed: "+flight.HorizontalSpeed.ToString("F1")+" m/s");
+        GUILayout.Label(new GUIContent("Q: "+(flight.DynamicPressure/1000).ToString("F1")+" kPa · AoA: "+flight.AngleOfAttack.ToString("F1")+"°",
+            "Dynamic pressure (½ρv²) - how hard the air pushes - and angle of attack between the vehicle's axis and the airflow. High Q and AoA make the air fight the steering; Max Q is usually ~1 min after liftoff."));
         GUILayout.Label(new GUIContent("Drag: "+(flight.Drag/1000).ToString("F1")+" kN · Cd "+flight.CurrentDragCoefficient.ToString("F2"), "Aerodynamic drag opposing velocity; falls off with altitude as the air thins, and the drag coefficient rises steeply around Mach 1."));
         GUILayout.Label("Fuel: "+flight.FuelRemaining.ToString("F1")+" kg ("+flight.FuelType+")");
         GUILayout.Label("LOX: "+flight.OxidizerRemaining.ToString("F1")+" kg");
@@ -564,29 +582,87 @@ public sealed class RocketAssemblyController : MonoBehaviour
     }
 
     private Vector2 flightGimbal;
+    // Flight control. With SAS (the flight computer, T toggles) W/S and A/D
+    // command a pitch / yaw rate; let go and it holds the attitude it had.
+    // Either way it works the way real thrust vector control does: each
+    // engine swivels only as far as its own gimbal range (Merlin ±5°, Raptor
+    // ±15°, F-1 ±6°...) at its actuator's slew rate, so torque - and how
+    // fast a heavy vehicle can turn - comes from thrust × lever arm, against
+    // whatever the air is doing (RocketFlightModel.ApplyAeroTorques). With
+    // the engines off there's no control at all: these vehicles have no
+    // attitude thrusters. SAS off = the keys deflect the gimbals directly.
+    private bool sasEnabled=true;
+    private bool holdingAttitude;
+    private Quaternion holdAttitude;
+    private readonly Vector2[] gimbalAngles=new Vector2[MaxSockets];
+    private const float SasMaxRate=5f;      // deg/s commanded by a held key
+    private const float SasNaturalFrequency=.8f, SasDamping=.9f, SasRateGain=1.5f;
+    public bool SasEnabled=>sasEnabled;
+
     private void UpdateFlightGimbals()
     {
+        if(Application.isFocused && !IgnorePilotInput && GUIUtility.keyboardControl==0 && Input.GetKeyDown(KeyCode.T))
+        { sasEnabled=!sasEnabled; holdingAttitude=false; }
         if(mountFrame==null || !mountFrame.CanGimbal)return;
         var input=Vector2.zero;
-        if(Application.isFocused && GUIUtility.keyboardControl==0)
+        if(Application.isFocused && !IgnorePilotInput && GUIUtility.keyboardControl==0)
         {
             input.x=((Input.GetKey(KeyCode.UpArrow)||Input.GetKey(KeyCode.W))?1f:0f)-((Input.GetKey(KeyCode.DownArrow)||Input.GetKey(KeyCode.S))?1f:0f);
             input.y=((Input.GetKey(KeyCode.LeftArrow)||Input.GetKey(KeyCode.A))?1f:0f)-((Input.GetKey(KeyCode.RightArrow)||Input.GetKey(KeyCode.D))?1f:0f);
         }
-        var desired=Vector2.ClampMagnitude(input,1f)*RocketMountFrame.PreviewAngleLimit;
-        flightGimbal=Vector2.MoveTowards(flightGimbal,desired,20f*Time.deltaTime);
+        input=Vector2.ClampMagnitude(input,1f);
+        var body=rocket.GetComponent<Rigidbody>();
+        var thrust=(float)flight.Thrust*PlanetBody.WorldUnitsPerMeter;   // world force units
+        var powered=(rocket.EngineEnabled || flight.SolidBurning) && thrust>0 && !body.isKinematic;
+
+        // Commanded deflection, in degrees: x tilts thrust about the local X
+        // axis (pitch), y about local Z (yaw). A deflection of +θ gives a
+        // torque of −L·T·sin θ about that axis (thrust acts below the
+        // centre of mass), which is why the signs below are negated.
+        Vector2 command;
+        if(!powered){ command=Vector2.zero; holdingAttitude=false; }
+        else if(sasEnabled)
+        {
+            var omega=transform.InverseTransformDirection(body.angularVelocity);
+            Vector3 alpha;
+            if(input.sqrMagnitude>.0001f)
+            {
+                holdingAttitude=false;
+                var rate=new Vector3(input.x,0,input.y)*SasMaxRate*Mathf.Deg2Rad;
+                alpha=(rate-omega)*SasRateGain;
+            }
+            else
+            {
+                if(!holdingAttitude){holdAttitude=transform.rotation;holdingAttitude=true;}
+                (Quaternion.Inverse(transform.rotation)*holdAttitude).ToAngleAxis(out var angle,out var axis);
+                if(angle>180)angle-=360;
+                var error=axis*(angle*Mathf.Deg2Rad);
+                if(float.IsNaN(error.x))error=Vector3.zero;
+                alpha=error*(SasNaturalFrequency*SasNaturalFrequency)-omega*(2*SasDamping*SasNaturalFrequency);
+            }
+            var inertia=body.inertiaTensor;
+            var lever=Mathf.Max(1e-6f,Vector3.Distance(body.worldCenterOfMass,cluster.position));
+            var authority=lever*thrust;
+            command=new Vector2(
+                Mathf.Asin(Mathf.Clamp(-inertia.x*alpha.x/authority,-1f,1f))*Mathf.Rad2Deg,
+                Mathf.Asin(Mathf.Clamp(-inertia.z*alpha.z/authority,-1f,1f))*Mathf.Rad2Deg);
+        }
+        else command=-input*RocketMountFrame.PreviewAngleLimit*2;
+
+        // Each engine follows within its own range, at its own slew rate.
+        var shown=Vector2.zero;var count=0;
         for(var i=0;i<SocketCount;i++)
         {
             var parameters=GetParameters(i);
-            // A gimballed engine below the centre of mass swings the nose the
-            // OPPOSITE way from its own tilt - same reason real rocket TVC
-            // steers by kicking the tail away from the turn. Feeding
-            // flightGimbal straight into the mount tilted the engine toward
-            // the key pressed, so the nose swung backwards from what W/S/A/D
-            // suggest. Negate it here so the commanded direction matches the
-            // nose's actual response, not the engine's.
-            mountFrame.SetAngle(i,parameters!=null && parameters.allowGimbal?-flightGimbal:Vector2.zero);
+            var range=parameters!=null && parameters.allowGimbal?parameters.gimbalRange:0f;
+            var rate=parameters!=null?parameters.gimbalRate:0f;
+            var target=Vector2.ClampMagnitude(command,range);
+            gimbalAngles[i]=Vector2.MoveTowards(gimbalAngles[i],target,rate*Time.deltaTime);
+            mountFrame.SetAngle(i,gimbalAngles[i],range);
+            if(range>0){shown+=gimbalAngles[i];count++;}
         }
+        // Shown on the flight panel in the old convention (+ = key direction).
+        flightGimbal=count>0?-shown/count:Vector2.zero;
     }
 
     private void Update()
@@ -614,7 +690,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
     // the pad and to re-light mid-flight after a shutdown.
     private bool HandleEngineToggleKey()
     {
-        if(!Application.isFocused || GUIUtility.keyboardControl!=0 || !Input.GetKeyDown(KeyCode.Space))return false;
+        if(!Application.isFocused || IgnorePilotInput || GUIUtility.keyboardControl!=0 || !Input.GetKeyDown(KeyCode.Space))return false;
         if(rocket.EngineEnabled){rocket.StopEngine();pilotShutdown=true;}
         else if(!rocket.Launched)TryLaunch();
         else
@@ -680,7 +756,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
     private void UpdateFlightThrottle()
     {
         HandleEngineToggleKey();
-        if(!Application.isFocused || GUIUtility.keyboardControl!=0)return;
+        if(!Application.isFocused || IgnorePilotInput || GUIUtility.keyboardControl!=0)return;
         var previousThrottle=commandedThrottle;
         if(Input.GetKeyDown(KeyCode.Z))commandedThrottle=1f;
         else if(Input.GetKeyDown(KeyCode.X))commandedThrottle=0f;
@@ -831,6 +907,8 @@ public sealed class RocketAssemblyController : MonoBehaviour
         if(!string.IsNullOrEmpty(preset.coreEngineId))layout.parameters[0]=EnginePerformance.Reference(preset.coreEngineId);
         flight.SetSolidBoosters(preset.solidBoosterId,preset.solidBoosterCount);
         flight.SetPresetDryMass(preset.dryMass);
+        flight.SetFlightProgram(preset.mecoSeconds,preset.throttleProgram,preset.engineCutoffs);
+        flight.SetAerodynamics(preset.centerOfPressure,preset.normalForceSlope);
         layout.fuelType=preset.fuelType;
         flight.SetFuel(preset.fuelType);
         SetTank(false,true,preset.fuelCapacity,preset.fuelDiameter);
@@ -862,6 +940,8 @@ public sealed class RocketAssemblyController : MonoBehaviour
         rocket.SetBodyModel(null);
         flight.SetSolidBoosters(null,0);
         flight.SetPresetDryMass(0);
+        flight.SetFlightProgram(0,null,null);
+        flight.SetAerodynamics(0,0);
         SetTankColors(DefaultFuelColor,DefaultOxidizerColor);
         flight.SetDragCoefficient(0.5f);
         selectedSocket=0;

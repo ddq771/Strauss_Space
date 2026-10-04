@@ -76,6 +76,7 @@ public sealed class Rocket : MonoBehaviour
     // a preset's body model, which carries its own engines, produces thrust.
     public float BodyBaseLocalY => -(bodyHeight + noseHeight + engineHeight) * .5f * PlanetBody.WorldUnitsPerMeter;
     public float BodyDiameter => bodyDiameter;
+    public float TotalHeight => bodyHeight + noseHeight + engineHeight;   // m
     public float AssemblyMountLocalY =>
         (engineHeight - (bodyHeight + noseHeight + engineHeight) * .5f) * PlanetBody.WorldUnitsPerMeter;
 
@@ -439,8 +440,10 @@ public sealed class Rocket : MonoBehaviour
         capsule.radius = (bodyDiameter * 0.5f) * PlanetBody.WorldUnitsPerMeter;
         capsule.height = totalHeight * PlanetBody.WorldUnitsPerMeter;
 
-        hullMaterial ??= CreateUnlitStandardMaterial(hullColor, 0.6f);
-        engineMaterial ??= CreateUnlitStandardMaterial(new Color(0.12f, 0.12f, 0.13f), 0.3f);
+        // == null, not ??=: a material destroyed when Play mode ends is only
+        // "null" to Unity's own comparison.
+        if (hullMaterial == null) hullMaterial = CreateUnlitStandardMaterial(hullColor, 0.6f);
+        if (engineMaterial == null) engineMaterial = CreateUnlitStandardMaterial(new Color(0.12f, 0.12f, 0.13f), 0.3f);
         hullMaterial.color = hullColor;
 
         if (builtBodyDiameter == bodyDiameter && builtBodyHeight == bodyHeight &&

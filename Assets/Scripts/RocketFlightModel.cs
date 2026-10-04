@@ -28,6 +28,65 @@ public sealed class RocketFlightModel : MonoBehaviour
     [SerializeField] private float solidPropellant;
     [SerializeField] private float solidBurnTime;
     private EnginePerformance.SolidMotor solidMotor;
+    // Aerodynamic stability: where along the vehicle (fraction of its height
+    // from the base) the air's sideways force acts - the centre of pressure -
+    // and how strongly it grows with angle of attack (normal-force slope,
+    // per radian). Centre of pressure above the centre of mass = unstable:
+    // the air tries to flip the vehicle and the engines must hold it
+    // straight (finless Falcon 9, Starship). Fins / flared bases move it aft,
+    // making the vehicle weathervane into the airflow (Saturn V, Vostok).
+    [SerializeField] private float centerOfPressure=.65f;
+    [SerializeField] private float normalForceSlope=2f;
+    private const double PitchDampingCoefficient=12;   // Cmq-style, nondimensional
+    public void SetAerodynamics(float cp,float cnAlpha)
+    {
+        centerOfPressure=cp>0?Mathf.Clamp01(cp):.65f;
+        normalForceSlope=cnAlpha>0?cnAlpha:2f;
+    }
+    public double DynamicPressure {get;private set;}   // Pa, ½ρv²
+    public double AngleOfAttack {get;private set;}     // deg, body axis vs airflow
+    public float CenterOfPressure=>centerOfPressure;
+
+    // A preset's real first-stage flight program (see RocketPresets.Preset):
+    // throttle schedule, individual engine cutoffs and MECO, timed from
+    // liftoff. Empty for custom builds.
+    [SerializeField] private float mecoTime;
+    [SerializeField] private float[] throttleProgram;
+    [SerializeField] private float[] engineCutoffs;
+    [SerializeField] private float missionTime;
+    [SerializeField] private bool mecoDone;
+    public float MissionTime=>missionTime;
+    public float MecoTime=>mecoTime;
+    public bool MecoDone=>mecoDone;
+    public bool HasFlightProgram=>mecoTime>0 || (throttleProgram?.Length??0)>1 || (engineCutoffs?.Length??0)>1;
+    public void SetFlightProgram(float meco,float[] throttle,float[] cutoffs)
+    {
+        Bind();if(rocket.Launched)return;
+        mecoTime=Mathf.Max(0,meco);throttleProgram=throttle;engineCutoffs=cutoffs;missionTime=0;mecoDone=false;
+    }
+    /// <summary>The flight program's throttle limit now (1 = none).</summary>
+    public float ProgramThrottle
+    {
+        get
+        {
+            var p=throttleProgram;
+            if(p==null || p.Length<2)return 1;
+            if(missionTime<=p[0])return p[1];
+            for(var i=2;i+1<p.Length;i+=2)
+                if(missionTime<=p[i])return Mathf.Lerp(p[i-1],p[i+1],(missionTime-p[i-2])/Mathf.Max(1e-6f,p[i]-p[i-2]));
+            return p[^1];
+        }
+    }
+    /// <summary>Whether the flight program has shut this engine down yet.</summary>
+    public bool EngineCutOff(int socket)
+    {
+        var c=engineCutoffs;
+        if(c==null || !rocket.Launched)return false;
+        for(var i=0;i+1<c.Length;i+=2)
+            if(Mathf.RoundToInt(c[i+1])==socket && missionTime>=c[i])return true;
+        return false;
+    }
+
     // A preset's real non-propellant mass (kg): first-stage structure and
     // engines plus the fully fuelled upper stages, payload and fairing - so
     // liftoff weight matches the real vehicle. 0 = sandbox estimate from
@@ -63,6 +122,9 @@ public sealed class RocketFlightModel : MonoBehaviour
         body.AddForceAtPosition(direction*(float)(SolidThrust*fraction*PlanetBody.WorldUnitsPerMeter),basePoint,ForceMode.Force);
         solidPropellant=Mathf.Max(0,solidPropellant-(float)used);
         solidBurnTime+=dt;
+        // Burnout at the end of the grain's thrust curve, whatever sliver of
+        // propellant the curve didn't quite account for.
+        if(solidBurnTime>=Solid.BurnTime)solidPropellant=0;
         if(solidPropellant<=0)SolidThrust=0;
         UpdateMass();
     }
@@ -145,6 +207,7 @@ public sealed class RocketFlightModel : MonoBehaviour
         Bind();fuelRemaining=(assembly.FuelTank!=null?assembly.FuelTank.Capacity:0)*FuelDensity*initialFill;
         oxidizerRemaining=(assembly.OxidizerTank!=null?assembly.OxidizerTank.Capacity:0)*OxygenDensity*initialFill;
         solidPropellant=Solid!=null?(float)(solidCount*Solid.propellantMass):0;solidBurnTime=0;
+        missionTime=0;mecoDone=false;
         tanksInitialized=true;UpdateMass();
     }
     public void AssemblyChanged()
@@ -238,13 +301,45 @@ public sealed class RocketFlightModel : MonoBehaviour
     private void ApplyDrag(Rigidbody body)
     {
         UpdateAtmosphere();
-        if(AirDensity<=0){Drag=0;return;}
+        if(AirDensity<=0){Drag=0;DynamicPressure=0;return;}
         var velocity=body.linearVelocity/PlanetBody.WorldUnitsPerMeter;
         var speed=velocity.magnitude;
-        if(speed<0.05f){Drag=0;return;}
+        if(speed<0.05f){Drag=0;DynamicPressure=0;return;}
         Drag=0.5*AirDensity*speed*speed*dragCoefficient*MachDragFactor(speed/SpeedOfSound)*FrontalArea;
         var direction=-velocity/speed;
         body.AddForce(direction*(float)(Drag*PlanetBody.WorldUnitsPerMeter),ForceMode.Force);
+        ApplyAeroTorques(body,velocity,speed);
+    }
+
+    /// <summary>
+    /// The air's turning effect: at an angle of attack, a sideways (normal)
+    /// force N = q·S·CNα·sin α acts at the centre of pressure - turning the
+    /// vehicle toward the airflow if that's behind the centre of mass, away
+    /// from it if ahead - and rotation is damped in proportion to q. Both
+    /// fade with the air: strong at Max Q, gone above ~50 km.
+    /// </summary>
+    private void ApplyAeroTorques(Rigidbody body,Vector3 velocity,float speed)
+    {
+        var q=0.5*AirDensity*speed*speed;
+        DynamicPressure=q;
+        var axis=transform.up;
+        AngleOfAttack=Vector3.Angle(axis,velocity);
+        if(q<1)return;
+        var crossflow=velocity-Vector3.Dot(velocity,axis)*axis;
+        var sinAlpha=crossflow.magnitude/speed;
+        var u=PlanetBody.WorldUnitsPerMeter;
+        if(sinAlpha>1e-5)
+        {
+            var normal=q*FrontalArea*normalForceSlope*sinAlpha;
+            var cp=transform.TransformPoint(Vector3.up*(rocket.BodyBaseLocalY+centerOfPressure*rocket.TotalHeight*u));
+            body.AddForceAtPosition(-crossflow.normalized*(float)(normal*u),cp,ForceMode.Force);
+        }
+        // Pitch/yaw damping: the air resists the vehicle swinging round.
+        var spin=body.angularVelocity;
+        var swing=spin-Vector3.Dot(spin,axis)*axis;
+        var length=rocket.TotalHeight;
+        var k=q*FrontalArea*length*length*PitchDampingCoefficient/(2*speed);
+        body.AddTorque(-swing*(float)(k*u*u),ForceMode.Force);
     }
 
     // The scene is fixed to the turning Earth - a rotating frame - so free
@@ -274,6 +369,8 @@ public sealed class RocketFlightModel : MonoBehaviour
             return (GroundVelocity+Vector3.Cross(planet.SpinVector,r)).magnitude;
         }
     }
+
+    public static string Clock(double seconds)=>((int)(seconds/60))+":"+((int)seconds%60).ToString("00");
 
     // Cross-section the drag acts on: the body's own (collider) radius.
     private CapsuleCollider frontalCapsule;
@@ -311,15 +408,22 @@ public sealed class RocketFlightModel : MonoBehaviour
         if(assembly.InstalledCount==0){Status="Install an engine first.";return false;}
         if(assembly.FuelTank==null || assembly.OxidizerTank==null){Status="Both propellant tanks are required.";return false;}
         if(fuelRemaining<=0 || oxidizerRemaining<=0){Status="Propellant depleted.";return false;}
+        if(mecoDone){Status="MECO at T+"+Clock(mecoTime)+" - first stage burn complete (no staging yet).";return false;}
+        // The program caps the throttle (like a flight computer's Max Q limit)
+        // rather than scaling it, so it can't push it under an engine's minimum.
+        throttle=Math.Min(throttle,ProgramThrottle);
         double totalThrust=0,totalFuelFlow=0,totalOxidizerFlow=0;
+        var running=0;
         for(var i=0;i<assembly.SocketCount;i++)
         {
-            var p=assembly.GetParameters(i);if(p==null)continue;
+            var p=assembly.GetParameters(i);if(p==null || EngineCutOff(i))continue;
+            running++;
             if(p.fuel!=fuelType){Status="Fuel mismatch: engine requires "+p.fuel+". Choose matching engines or change tank fuel.";return false;}
             var r=EnginePerformance.Evaluate(p,throttle,Pressure);
             if(!r.valid){Status="Outside engine model range: check parameters, pressure and minimum throttle.";return false;}
             totalThrust+=r.thrust;totalFuelFlow+=r.fuelFlow;totalOxidizerFlow+=r.oxidizerFlow;
         }
+        if(running==0){Status="All engines shut down by the flight program.";return false;}
         LiquidThrust=totalThrust;FuelFlow=totalFuelFlow;OxidizerFlow=totalOxidizerFlow;
         Status="Ready";return true;
     }
@@ -327,10 +431,11 @@ public sealed class RocketFlightModel : MonoBehaviour
     {
         if(!Prepare(throttle)){rocket.StopEngine();return;}
         var fraction=Math.Min(1,Math.Min(fuelRemaining/Math.Max(1e-12,FuelFlow*dt),oxidizerRemaining/Math.Max(1e-12,OxidizerFlow*dt)));
+        var programmed=Math.Min(throttle,ProgramThrottle);
         for(var i=0;i<assembly.SocketCount;i++)
         {
-            var p=assembly.GetParameters(i);if(p==null)continue;
-            var r=EnginePerformance.Evaluate(p,throttle,Pressure);
+            var p=assembly.GetParameters(i);if(p==null || EngineCutOff(i))continue;
+            var r=EnginePerformance.Evaluate(p,programmed,Pressure);
             // Scene lengths use kilometres; forces must use the same scale as gravity.
             body.AddForceAtPosition(assembly.GetThrustDirection(i)*(float)(r.thrust*fraction*PlanetBody.WorldUnitsPerMeter),assembly.GetSocketPosition(i),ForceMode.Force);
         }
@@ -347,6 +452,13 @@ public sealed class RocketFlightModel : MonoBehaviour
         // Applied every physics step regardless of engine state, so drag
         // keeps slowing the rocket while coasting or falling, not just
         // during powered flight (Step() only runs with the engine firing).
+        missionTime+=Time.fixedDeltaTime*TimeWarp.ClockMultiplier;
+        if(mecoTime>0 && !mecoDone && missionTime>=mecoTime)
+        {
+            mecoDone=true;
+            rocket.StopEngine();
+            Status="MECO at T+"+Clock(mecoTime)+" - first stage burn complete (no staging yet).";
+        }
         ApplyDrag(GetComponent<Rigidbody>());
         BurnSolids(GetComponent<Rigidbody>(),Time.fixedDeltaTime);
         ApplyRotatingFrame(GetComponent<Rigidbody>());

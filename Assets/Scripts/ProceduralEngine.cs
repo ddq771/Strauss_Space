@@ -68,7 +68,9 @@ public sealed class ProceduralEngine : MonoBehaviour
             return;
         }
 
-        material ??= Rocket.CreateUnlitStandardMaterial(color, 0.35f);
+        // == null, not ??=: a material destroyed when Play mode ends is only
+        // "null" to Unity's own comparison.
+        if (material == null) material = Rocket.CreateUnlitStandardMaterial(color, 0.35f);
         material.color = color;
 
         // Chamber: a short, near-cylindrical barrel just below the mount.

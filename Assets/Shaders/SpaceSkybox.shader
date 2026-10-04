@@ -48,6 +48,13 @@ Shader "Skybox/ProceduralStarfield"
             // Earth's rotation angle (SolarSystem): the stars are fixed in
             // inertial space, so they turn across the Earth-fixed sky.
             float _SkyAngle;
+            // Set by MoonBody: world position + radius (world units), its
+            // orientation (for the texture), its map, and whether the sky
+            // should draw it (not once the camera can see the real sphere).
+            float4 _MoonPosition;
+            float4x4 _MoonWorldToLocal;
+            sampler2D _MoonTex;
+            float _MoonSkyDisc;
 
             v2f vert(appdata v)
             {
@@ -134,6 +141,32 @@ Shader "Skybox/ProceduralStarfield"
                     else
                     {
                         col += fixed3(1, .9, .7) * 0.35 * exp(-(r - 1) * 1.6);
+                    }
+                }
+
+                // The Moon's disc, from where this camera actually is (so no
+                // parallax error at the surface): the LRO map on a sphere,
+                // lit by the Sun - real phases - plus a little earthshine on
+                // the dark side.
+                if (_MoonSkyDisc > 0.5 && _MoonPosition.w > 0)
+                {
+                    float3 toMoon = _MoonPosition.xyz - _WorldSpaceCameraPos;
+                    float moonDist = length(toMoon);
+                    float3 m = toMoon / moonDist;
+                    float moonRadius = asin(saturate(_MoonPosition.w / moonDist));
+                    float rr = acos(saturate(dot(viewDir, m))) / moonRadius;
+                    if (rr < 1)
+                    {
+                        float3 t = viewDir - m * dot(viewDir, m);
+                        float tl = length(t);
+                        t = tl > 1e-7 ? t / tl : float3(0, 0, 0);
+                        float3 n = normalize(t * rr - m * sqrt(1 - rr * rr));
+                        float3 local = mul((float3x3)_MoonWorldToLocal, n);
+                        float2 uv = float2(atan2(local.z, local.x) / (2 * UNITY_PI) + 0.5, 0.5 + asin(clamp(local.y, -1, 1)) / UNITY_PI);
+                        float3 albedo = tex2Dlod(_MoonTex, float4(uv, 0, 0)).rgb;
+                        float3 sunDir = _SolarDirection.xyz;
+                        float lit = dot(sunDir, sunDir) > 0.5 ? saturate(dot(n, normalize(sunDir))) : 1;
+                        col = albedo * (lit * 1.6 + 0.015);
                     }
                 }
 

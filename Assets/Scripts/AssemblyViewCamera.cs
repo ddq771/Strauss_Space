@@ -273,6 +273,9 @@ public sealed class AssemblyViewCamera : MonoBehaviour
             // Never further than the far side of the planet from the map
             // camera (which sits at radius + distance from the centre).
             camera.farClipPlane = Mathf.Min(neededFarMeters, planet.Radius * 2.2f + distance * 1.1f) * scale;
+            // Map view reaches out past the Moon's orbit (≤ ~407,000 km).
+            if (OrbitalBlend(distance) > 0f)
+                camera.farClipPlane = Mathf.Max(camera.farClipPlane, (planet.Radius + distance + 4.15e8f) * scale);
             camera.nearClipPlane = Mathf.Max(
                 Mathf.Clamp(distance * .00001f, .05f, 20000f) * scale,
                 camera.farClipPlane * .00001f);

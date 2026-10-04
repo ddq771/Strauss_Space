@@ -176,7 +176,7 @@ public sealed class SolarSystem : MonoBehaviour
 
     // Inertial equatorial vector (x toward the March equinox, z north) to
     // the Earth-fixed scene's axes at Earth's current rotation angle.
-    private static Vector3 EquatorialToScene(double x, double y, double z, double rotation)
+    public static Vector3 EquatorialToScene(double x, double y, double z, double rotation)
     {
         var lon = Math.Atan2(y, x) - rotation;
         var h = Math.Sqrt(x * x + y * y);
@@ -305,9 +305,11 @@ public sealed class SolarSystem : MonoBehaviour
         }
         style ??= new GUIStyle(GUI.skin.label) { alignment = TextAnchor.UpperRight, fontSize = 12 };
         style.normal.textColor = new Color(1f, .93f, .75f);
-        GUI.Label(new Rect(Screen.width - 524, 18, 500, 40),
+        GUI.Label(new Rect(Screen.width - 524, 18, 500, 56),
             Date.ToString("yyyy-MM-dd HH:mm") + " UTC   ·   Earth–Sun " + (DistanceMeters / 1e9).ToString("F2") + " million km (" +
             (DistanceMeters / AstronomicalUnit).ToString("F4") + " AU)\nOrbital speed " + (OrbitalSpeed / 1000).ToString("F2") +
-            " km/s   ·   Sun over " + Math.Abs(SubsolarLatitude).ToString("F1") + "°" + (SubsolarLatitude >= 0 ? "N" : "S"), style);
+            " km/s   ·   Sun over " + Math.Abs(SubsolarLatitude).ToString("F1") + "°" + (SubsolarLatitude >= 0 ? "N" : "S") +
+            (MoonBody.Instance != null ? "\nMoon " + (MoonBody.Instance.DistanceMeters / 1000).ToString("N0") + " km   ·   " +
+                (MoonBody.Instance.IlluminatedFraction * 100).ToString("F0") + "% lit" : ""), style);
     }
 }

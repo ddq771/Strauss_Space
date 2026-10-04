@@ -190,7 +190,7 @@ public sealed class PlanetBody : MonoBehaviour
 
     private void ApplySmoothMesh()
     {
-        meshFilter ??= GetComponent<MeshFilter>();
+        if (meshFilter == null) meshFilter = GetComponent<MeshFilter>();
         if (meshFilter == null)
         {
             return;
