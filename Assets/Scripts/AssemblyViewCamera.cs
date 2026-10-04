@@ -59,9 +59,11 @@ public sealed class AssemblyViewCamera : MonoBehaviour
             SceneManager.LoadScene("PlanetScene");
             return;
         }
-        if (planet != null && Input.GetKeyDown(KeyCode.V))
+        // Automated editor checks: keystrokes typed elsewhere mustn't move the camera.
+        var acceptInput = !RocketAssemblyController.IgnorePilotInput;
+        if (acceptInput && planet != null && Input.GetKeyDown(KeyCode.V))
             desiredDistance = desiredDistance > 1000000f ? 90f : 16000000f;
-        if (Input.GetKeyDown(KeyCode.F))
+        if (acceptInput && Input.GetKeyDown(KeyCode.F))
         {
             desiredDistance = 90f;
             target = new Vector3(0,18,0);
@@ -70,7 +72,7 @@ public sealed class AssemblyViewCamera : MonoBehaviour
             pitch = 25f;
         }
         var inMap = OrbitalBlend(distance) > .5f;
-        if (Input.GetMouseButton(1))
+        if (acceptInput && Input.GetMouseButton(1))
         {
             if (inMap)
             {
@@ -83,7 +85,7 @@ public sealed class AssemblyViewCamera : MonoBehaviour
                 pitch = Mathf.Clamp(pitch - Input.GetAxis("Mouse Y") * 3f, -85f, 89f);
             }
         }
-        if (!RocketAssemblyController.IsPointerOverPanel())
+        if (acceptInput && !RocketAssemblyController.IsPointerOverPanel())
         {
             var wheel=Input.mouseScrollDelta.y;
             desiredDistance = Mathf.Clamp(desiredDistance * Mathf.Exp(-wheel * 0.2f),

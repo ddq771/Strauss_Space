@@ -240,7 +240,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
                 "enable \"Allow gimballed mounting\" on the frame to steer.",
                 new GUIStyle(GUI.skin.label){wordWrap=true});
         }
-        GUILayout.Label("Shift/Ctrl: throttle up/down. Z: full throttle. X: cut throttle. Space: toggle ignition. W/S/A/D: pitch/yaw. T: SAS.",new GUIStyle(GUI.skin.label){wordWrap=true});
+        GUILayout.Label("Shift/Ctrl: throttle up/down. Z: full throttle. X: cut throttle. Space: toggle ignition. G: stage. W/S/A/D: pitch/yaw. T: SAS.",new GUIStyle(GUI.skin.label){wordWrap=true});
         GUILayout.Label(new GUIContent(sasEnabled?"SAS: on - keys set turn rate, release to hold attitude":"SAS: off - keys deflect the engines directly",
             "The flight computer steers by gimballing the engines (each within its real range and speed). No control with the engines off."));
         GUILayout.Label("Throttle: "+(commandedThrottle*100).ToString("F0")+"%");
@@ -261,9 +261,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         }
         GUILayout.Label("Mass: "+(flight.TotalMass/1000).ToString("F2")+" t · TWR: "+flight.TWR.ToString("F2"));
         GUILayout.Label((rocket.EngineEnabled?"Thrust: ":"Available thrust: ")+(flight.Thrust/1000).ToString("F1")+" kN");
-        if(StageName(stageIndex)!=null)
-            GUILayout.Label(new GUIContent("Stage "+(stageIndex+1)+"/"+StageCount+": "+StageName(stageIndex)+
-                (separated?" - separated, next stage igniting":""),"Stages separate automatically at the end of each burn and the next one lights, on the real vehicle's timeline."));
+
         if(flight.HasFlightProgram)
         {
             var program="T+"+RocketFlightModel.Clock(flight.MissionTime);
@@ -611,6 +609,12 @@ public sealed class RocketAssemblyController : MonoBehaviour
     private int stageIndex;            // 0 = first stage
     private float separationAt=-1, ignitionAt=-1;
     private bool separated, finalRelightOffered;
+    // Operator control: with auto-staging off nothing separates or drops on
+    // its own - the operator stages (G or the Stage button), as a flight
+    // crew / range would command it. G also stages early with auto on.
+    private bool autoStaging=true, stagePromptShown;
+    private float stageStartPropellant;
+    public bool AutoStaging=>autoStaging;
     private readonly HashSet<int> dropsDone=new HashSet<int>();
     public int StageIndex=>stageIndex;
     public int StageCount=>activePresetIndex>=0 && RocketPresets.All[activePresetIndex].Staged ? RocketPresets.All[activePresetIndex].upperStages.Length+1 : 1;
@@ -620,6 +624,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
     private void ResetStaging(int presetIndex)
     {
         activePresetIndex=presetIndex;stageIndex=0;separationAt=ignitionAt=-1;separated=false;finalRelightOffered=false;
+        stagePromptShown=false;stageStartPropellant=-1;
         dropsDone.Clear();
         DroppedStage.ClearAll();
     }
@@ -645,11 +650,8 @@ public sealed class RocketAssemblyController : MonoBehaviour
             for(var i=0;i<drops.Length;i++)
                 if(!dropsDone.Contains(i) && flight.StageBurnTime>=drops[i].time)
                 {
-                    dropsDone.Add(i);
-                    Detach(drops[i].modelStages,drops[i].mass+(drops[i].solids?SolidCasingMass():0),"Dropped "+string.Join(", ",drops[i].modelStages));
-                    if(drops[i].solids)flight.JettisonSolids();
-                    else flight.ShedDryMass(drops[i].mass);
-                    notice=string.Join(", ",drops[i].modelStages).Replace("_"," ")+" separated at T+"+RocketFlightModel.Clock(now)+".";
+                    if(autoStaging)Drop(drops,i,now);
+                    else if(!stagePromptShown){stagePromptShown=true;notice=DropName(drops[i])+" burnt out - press G to stage.";}
                 }
 
         if(stageIndex>=p.upperStages.Length)
@@ -666,9 +668,290 @@ public sealed class RocketAssemblyController : MonoBehaviour
         var next=p.upperStages[stageIndex];
         var spent=flight.MecoDone || flight.FuelRemaining<=0 || flight.OxidizerRemaining<=0;
         if(!separated && separationAt<0 && spent && !rocket.EngineEnabled)
-            separationAt=now+next.separationDelay;
+        {
+            if(autoStaging)separationAt=now+next.separationDelay;
+            else if(!stagePromptShown){stagePromptShown=true;notice=StageName(stageIndex)+" burn complete - press G to separate and light "+next.name+".";}
+        }
         if(!separated && separationAt>=0 && now>=separationAt)Separate(p,next,now);
         if(separated && now>=ignitionAt)Ignite(next,now);
+    }
+
+    private void Drop(RocketPresets.StageDrop[] drops,int i,float now)
+    {
+        dropsDone.Add(i);
+        Detach(drops[i].modelStages,drops[i].mass+(drops[i].solids?SolidCasingMass():0),"Dropped "+string.Join(", ",drops[i].modelStages));
+        if(drops[i].solids)flight.JettisonSolids();
+        else flight.ShedDryMass(drops[i].mass);
+        stagePromptShown=false;
+        notice=DropName(drops[i])+" separated at T+"+RocketFlightModel.Clock(now)+".";
+        Banner(DropName(drops[i]).ToUpperInvariant()+" SEPARATION");
+    }
+
+    private static string DropName(RocketPresets.StageDrop drop)=>string.Join(", ",drop.modelStages).Replace("_"," ");
+
+    private RocketPresets.StageDrop[] CurrentDrops(RocketPresets.Preset p)=>stageIndex==0?p.firstStageDrops:p.upperStages[stageIndex-1].drops;
+
+    private int NextDropIndex(RocketPresets.Preset p)
+    {
+        var drops=CurrentDrops(p);
+        if(drops==null || separated)return -1;
+        for(var i=0;i<drops.Length;i++)if(!dropsDone.Contains(i))return i;
+        return -1;
+    }
+
+    /// <summary>What the next press of Stage does, or null if nothing is left to stage.</summary>
+    public string NextStageAction
+    {
+        get
+        {
+            if(activePresetIndex<0 || !rocket.Launched || flight.Crashed)return null;
+            var p=RocketPresets.All[activePresetIndex];
+            if(!p.Staged || separated)return null;
+            var drop=NextDropIndex(p);
+            if(drop>=0)return "Drop "+DropName(CurrentDrops(p)[drop]);
+            if(stageIndex>=p.upperStages.Length)return null;
+            return "Separate "+StageName(stageIndex)+", light "+p.upperStages[stageIndex].name;
+        }
+    }
+
+    // The operator's Stage command: the next mid-burn drop (strap-ons,
+    // SRBs) if one is left, otherwise cut the current stage's engines,
+    // separate it and light the next one after its real ullage / ignition
+    // delay. Staging early leaves the unburnt propellant on the spent stage.
+    public void StageNow()
+    {
+        if(NextStageAction==null)return;
+        var p=RocketPresets.All[activePresetIndex];
+        var now=flight.MissionTime;
+        var drop=NextDropIndex(p);
+        if(drop>=0){Drop(CurrentDrops(p),drop,now);return;}
+        if(rocket.EngineEnabled)rocket.StopEngine();
+        stagePromptShown=false;
+        Separate(p,p.upperStages[stageIndex],now);
+    }
+
+    private void HandleStageKey()
+    {
+        if(Application.isFocused && !IgnorePilotInput && GUIUtility.keyboardControl==0 && Input.GetKeyDown(KeyCode.G))StageNow();
+    }
+
+    // Fraction of the current stage's propellant left (0-1).
+    public float StagePropellantFraction
+    {
+        get
+        {
+            var left=(float)flight.LiquidPropellant;
+            if(stageStartPropellant<0 || left>stageStartPropellant)stageStartPropellant=left;
+            return stageStartPropellant>0?left/stageStartPropellant:0f;
+        }
+    }
+
+    // --- KSP-style staging stack (bottom right of the flight screen) ------
+    // One block per stage still on the vehicle, the next one to go at the
+    // bottom (as on the real stack): engines, propellant gauge and status.
+    // Strap-on / SRB drops show as their own block above the core stage
+    // they belong to. A banner calls out each separation and ignition.
+    private string stageBanner; private float stageBannerUntil;
+    private GUIStyle stackTitle, stackText, bannerStyle;
+    private static Texture2D stackTex;
+
+    private void Banner(string text){stageBanner=text;stageBannerUntil=Time.unscaledTime+3.5f;}
+
+    private static void Fill(Rect r,Color c)
+    {
+        if(stackTex==null){stackTex=new Texture2D(1,1);stackTex.SetPixel(0,0,Color.white);stackTex.Apply();}
+        var old=GUI.color;GUI.color=c;GUI.DrawTexture(r,stackTex);GUI.color=old;
+    }
+
+    private void StagingStackGUI()
+    {
+        if(activePresetIndex<0)return;
+        var p=RocketPresets.All[activePresetIndex];
+        if(!p.Staged)return;
+        stackTitle??=new GUIStyle(GUI.skin.label){fontSize=13,fontStyle=FontStyle.Bold};
+        stackText??=new GUIStyle(GUI.skin.label){fontSize=11};
+        bannerStyle??=new GUIStyle(GUI.skin.label){fontSize=26,fontStyle=FontStyle.Bold,alignment=TextAnchor.MiddleCenter};
+
+        // Blocks, top (last stage) to bottom (next event).
+        var blocks=new List<(string title,string detail,float fill,int state,bool next)>();
+        for(var k=StageCount-1;k>=stageIndex;k--)
+        {
+            if(k==stageIndex && separated)continue;
+            var engines=k==0?null:p.upperStages[k-1].engines;
+            var engineText=engines!=null?EngineSummary(engines):(p.engineCount+"× "+p.engineId);
+            if(k>stageIndex)
+            {
+                var spec=p.upperStages[k-1];
+                var waiting=k==stageIndex+1 && separated?"igniting in "+Mathf.Max(0,ignitionAt-flight.MissionTime).ToString("F1")+" s":
+                    ((spec.fuelMass+spec.oxidizerMass)/1000f).ToString("N0")+" t propellant";
+                blocks.Add(("STAGE "+(k+1)+" · "+StageName(k)+"   Δv "+StageDeltaV(k).ToString("N0")+" m/s",engineText+" · "+waiting,1f,k==stageIndex+1&&separated?1:0,false));
+            }
+            else
+            {
+                var burn=flight.MecoTime>0&&!flight.MecoDone?" · cutoff in "+RocketFlightModel.Clock(Mathf.Max(0,flight.MecoTime-flight.StageBurnTime)):"";
+                blocks.Add(("STAGE "+(k+1)+" · "+StageName(k)+"   Δv "+StageDeltaV(k).ToString("N0")+" m/s",engineText+" · "+(!rocket.Launched?"ready":rocket.EngineEnabled?"BURNING":"off")+burn,
+                    StagePropellantFraction,rocket.EngineEnabled?1:2,false));
+            }
+            if(k==stageIndex)
+            {
+                var drops=CurrentDrops(p);
+                if(drops!=null)
+                    for(var i=drops.Length-1;i>=0;i--)
+                        if(!dropsDone.Contains(i))
+                            blocks.Add(("  ↳ "+DropName(drops[i]),drops[i].solids?"solid boosters · drop at "+RocketFlightModel.Clock(drops[i].time):"strap-ons · drop at "+RocketFlightModel.Clock(drops[i].time),
+                                drops[i].solids?flight.SolidBoosterCount>0?1f:0f:1f,3,false));
+            }
+        }
+        const float w=330,h=46,gap=4;
+        var action=NextStageAction;
+        var height=blocks.Count*(h+gap)+82;
+        var x=Screen.width-w-16;var y=Screen.height-height-16;
+        Fill(new Rect(x-6,y-6,w+12,height+12),new Color(0,0,0,.55f));
+        stackTitle.normal.textColor=Color.white;
+        GUI.Label(new Rect(x,y,w,20),"STAGING"+(autoStaging?" · auto":" · manual")+"     Total Δv "+TotalDeltaV.ToString("N0")+" m/s (vac)",stackTitle);
+        y+=24;
+        for(var b=0;b<blocks.Count;b++)
+        {
+            var (title,detail,fill,state,_)=blocks[b];
+            var isNext=b==blocks.Count-1;
+            var accent=state==1?new Color(.35f,.9f,.45f):state==3?new Color(1f,.7f,.3f):state==2?new Color(.9f,.8f,.3f):new Color(.55f,.6f,.7f);
+            var r=new Rect(x,y,w,h);
+            Fill(r,new Color(.12f,.14f,.18f,.9f));
+            Fill(new Rect(r.x,r.y,4,r.height),accent);
+            if(isNext && action!=null && Mathf.Repeat(Time.unscaledTime,1f)<.5f && (!autoStaging || stagePromptShown))
+                Fill(new Rect(r.x,r.y,r.width,2),new Color(1f,.85f,.3f));
+            stackTitle.normal.textColor=accent;
+            GUI.Label(new Rect(r.x+10,r.y+2,w-14,20),title,stackTitle);
+            stackText.normal.textColor=new Color(.85f,.87f,.9f);
+            GUI.Label(new Rect(r.x+10,r.y+19,w-14,18),detail,stackText);
+            Fill(new Rect(r.x+10,r.y+38,w-20,4),new Color(.25f,.27f,.3f));
+            Fill(new Rect(r.x+10,r.y+38,(w-20)*Mathf.Clamp01(fill),4),accent*new Color(1,1,1,.9f));
+            y+=h+gap;
+        }
+        GUI.enabled=action!=null;
+        if(GUI.Button(new Rect(x,y+2,w,30),action!=null?"STAGE (G) ▸ "+action:"STAGE (G)"))StageNow();
+        GUI.enabled=true;
+        autoStaging=GUI.Toggle(new Rect(x,y+34,w,20),autoStaging," Auto-staging (real timeline)");
+
+        if(stageBanner!=null && Time.unscaledTime<stageBannerUntil)
+        {
+            var a=Mathf.Clamp01((stageBannerUntil-Time.unscaledTime)/.8f);
+            bannerStyle.normal.textColor=new Color(1f,.85f,.4f,a);
+            GUI.Label(new Rect(0,Screen.height*.18f,Screen.width,40),stageBanner,bannerStyle);
+        }
+    }
+
+    // --- Delta-v ---------------------------------------------------------
+    // Tsiolkovsky per stage, Δv = Isp·g0·ln(m0/m1), with vacuum Isp (the
+    // thrust-weighted mean of the stage's engines; solids mixed in by
+    // propellant mass). The stage burning now uses the live mass and what
+    // is left in its tanks; later stages carry everything above them.
+    // Mid-burn drops (strap-ons, SRB casings) are left on - slightly
+    // conservative, like KSP's readout.
+    private const double G0=9.80665;
+
+    private static double StageIsp(string[] engines)
+    {
+        double thrust=0,flow=0;
+        foreach(var id in engines)
+        {
+            var e=EnginePerformance.Reference(id);
+            if(e==null || e.vacuumIsp<=0)continue;
+            thrust+=e.vacuumThrust;flow+=e.vacuumThrust/e.vacuumIsp;
+        }
+        return flow>0?thrust/flow:0;
+    }
+
+    private string[] FirstStageEngines(RocketPresets.Preset p)
+    {
+        var list=new string[Mathf.Max(1,p.engineCount)];
+        for(var i=0;i<list.Length;i++)list[i]=p.engineId;
+        return list;
+    }
+
+    /// <summary>Vacuum Δv (m/s) of stage k from now, or 0 if it's spent.</summary>
+    public double StageDeltaV(int k)
+    {
+        if(activePresetIndex<0)return 0;
+        var p=RocketPresets.All[activePresetIndex];
+        if(k<stageIndex || (k==stageIndex && separated))return 0;
+        if(k==stageIndex)
+        {
+            var engines=k==0?FirstStageEngines(p):p.upperStages[k-1].engines;
+            double liquid=flight.LiquidPropellant,solid=flight.SolidPropellant;
+            var isp=StageIsp(engines);
+            var solidMotor=EnginePerformance.Solid(p.solidBoosterId);
+            if(k==0 && solid>0 && solidMotor!=null)isp=(liquid*isp+solid*solidMotor.vacuumIsp)/Math.Max(1,liquid+solid);
+            double m0=flight.TotalMass,m1=m0-liquid-(k==0?solid:0);
+            return m1>0&&m0>m1?isp*G0*Math.Log(m0/m1):0;
+        }
+        // A later stage: everything from it up.
+        var spec=p.upperStages[k-1];
+        double above=p.payloadMass;
+        for(var j=k-1;j<p.upperStages.Length;j++)above+=p.upperStages[j].dryMass+p.upperStages[j].fuelMass+p.upperStages[j].oxidizerMass;
+        var end=above-spec.fuelMass-spec.oxidizerMass;
+        return end>0?StageIsp(spec.engines)*G0*Math.Log(above/end):0;
+    }
+
+    public double TotalDeltaV
+    {
+        get{double sum=0;for(var k=0;k<StageCount;k++)sum+=StageDeltaV(k);return sum;}
+    }
+
+    // --- Payload ----------------------------------------------------------
+    // Cargo on top of the last stage. For a real rocket it can go from 0 up
+    // to what that vehicle could lift to low Earth orbit; for a custom build
+    // up to what its engines can still lift off with (TWR 1). It is plain
+    // mass riding to the end, so it changes everything downstream: liftoff
+    // weight and TWR, acceleration, every stage's Δv, and the masses left
+    // after each separation.
+    private float customPayload;
+
+    private void PayloadControls()
+    {
+        float current,max;
+        if(activePresetIndex>=0)
+        {
+            var p=RocketPresets.All[activePresetIndex];
+            current=p.payloadMass;max=Mathf.Max(p.payloadMax,p.payloadMass);
+        }
+        else
+        {
+            current=customPayload;
+            // Thrust/g minus everything else at liftoff = the most it can lift.
+            max=Mathf.Max(0f,(float)(flight.Thrust/9.80665-(flight.TotalMass-customPayload)));
+        }
+        GUILayout.Label(new GUIContent("Payload: "+(current/1000).ToString("F1")+" t  (max "+(max/1000).ToString("F1")+" t)",
+            activePresetIndex>=0?"The most this vehicle could carry to low Earth orbit.":"The most this assembly can lift off with (thrust-to-weight 1)."));
+        if(max<=0)return;
+        var chosen=Mathf.Round(GUILayout.HorizontalSlider(current,0f,max)/100f)*100f;
+        chosen=Mathf.Min(chosen,max);
+        if(Mathf.Abs(chosen-current)>=1f)SetPayload(chosen);
+    }
+
+    public void SetPayload(float kilograms)
+    {
+        if(rocket.Launched)return;
+        if(activePresetIndex>=0)
+        {
+            var p=RocketPresets.All[activePresetIndex];
+            p.payloadMass=Mathf.Clamp(kilograms,0f,Mathf.Max(p.payloadMax,p.payloadMass));
+            flight.SetPresetDryMass(p.LiftoffDryMass);
+        }
+        else
+        {
+            customPayload=Mathf.Max(0f,kilograms);
+            flight.SetPresetDryMass(customPayload);
+        }
+    }
+
+    private static string EngineSummary(string[] engines)
+    {
+        var counts=new Dictionary<string,int>();
+        foreach(var e in engines){counts.TryGetValue(e,out var c);counts[e]=c+1;}
+        var parts=new List<string>();
+        foreach(var kv in counts)parts.Add((kv.Value>1?kv.Value+"× ":"")+kv.Key);
+        return string.Join(" + ",parts);
     }
 
     private float SolidCasingMass()
@@ -724,17 +1007,19 @@ public sealed class RocketAssemblyController : MonoBehaviour
         ignitionAt=now+next.ignitionDelay;
         dropsDone.Clear();
         notice=(StageName(stageIndex)??"Stage")+" separated at T+"+RocketFlightModel.Clock(now)+".";
+        Banner((StageName(stageIndex)??"Stage").ToUpperInvariant()+" SEPARATION");
     }
 
     private void Ignite(RocketPresets.StageSpec next,float now)
     {
         stageIndex++;
-        separated=false;separationAt=ignitionAt=-1;
+        separated=false;separationAt=ignitionAt=-1;stagePromptShown=false;stageStartPropellant=-1;
         flight.StartStageProgram(next.burnSeconds,null,next.engineCutoffs);
         pilotShutdown=false;
         commandedThrottle=1f;
         rocket.StartEngine(commandedThrottle);
         notice=next.name+" ignition at T+"+RocketFlightModel.Clock(now)+(rocket.EngineEnabled?".":" failed: "+flight.Status);
+        Banner(next.name.ToUpperInvariant()+(rocket.EngineEnabled?" IGNITION":" IGNITION FAILED"));
     }
 
     // Moves named Stage_* groups of the body model into a falling DroppedStage.
@@ -839,6 +1124,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         if(rocket==null || catalog==null)return;
         if(rocket.Launched)
         {
+            HandleStageKey();
             UpdateStaging();
             UpdateFlightGimbals();
             UpdateFlightThrottle();
@@ -1112,7 +1398,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         rocket.SetBodyModel(null);
         ResetStaging(-1);
         flight.SetSolidBoosters(null,0);
-        flight.SetPresetDryMass(0);
+        customPayload=0;flight.SetPresetDryMass(0);
         flight.SetFlightProgram(0,null,null);
         flight.SetAerodynamics(0,0);
         SetTankColors(DefaultFuelColor,DefaultOxidizerColor);
@@ -1238,6 +1524,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         if(!menuReported && Event.current.type==EventType.Repaint)
         {menuReported=true;Debug.Log("ROCKET_ASSEMBLY_MENU_RENDERED");}
         GUI.enabled=true;
+        if(activePresetIndex>=0)StagingStackGUI();
         GUILayout.BeginArea(LeftPanelRect,GUI.skin.box);
         if(rocket.Launched)
         {
@@ -1260,6 +1547,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         if(flight.Prepare(1f) || flight.Thrust>0)
             GUILayout.Label("Liftoff: "+(flight.TotalMass/1000).ToString("N0")+" t · "+(flight.Thrust/1e6).ToString("F1")+" MN · TWR "+flight.TWR.ToString("F2"),
                 new GUIStyle(GUI.skin.label){fontStyle=FontStyle.Bold,wordWrap=true});
+        PayloadControls();
         TimeWarpControls();
         if(locked)
         {

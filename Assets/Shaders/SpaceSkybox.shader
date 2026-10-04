@@ -3,12 +3,12 @@ Shader "Skybox/ProceduralStarfield"
     Properties
     {
         _StarDensity ("Star Density", Range(50, 400)) = 220
-        _StarBrightness ("Star Brightness", Range(0, 5)) = 2.2
-        _SkyColorTop ("Sky Color Top", Color) = (0.01, 0.01, 0.045, 1)
-        _SkyColorBottom ("Sky Color Bottom", Color) = (0, 0, 0.015, 1)
+        _StarBrightness ("Star Brightness", Range(0, 5)) = 1.4
+        _SkyColorTop ("Sky Color Top", Color) = (0, 0, 0, 1)
+        _SkyColorBottom ("Sky Color Bottom", Color) = (0, 0, 0, 1)
         _NebulaColorA ("Nebula Color A", Color) = (0.3, 0.06, 0.42, 1)
         _NebulaColorB ("Nebula Color B", Color) = (0.04, 0.18, 0.4, 1)
-        _NebulaStrength ("Nebula Strength", Range(0, 3)) = 1.1
+        _NebulaStrength ("Nebula Strength", Range(0, 3)) = 0
     }
     SubShader
     {
@@ -21,6 +21,7 @@ Shader "Skybox/ProceduralStarfield"
             CGPROGRAM
             #pragma vertex vert
             #pragma fragment frag
+            #pragma target 3.0
             #include "UnityCG.cginc"
 
             struct appdata
@@ -113,16 +114,28 @@ Shader "Skybox/ProceduralStarfield"
                 fixed3 nebulaColor = lerp(_NebulaColorA.rgb, _NebulaColorB.rgb, nebulaB);
                 col += nebulaColor * nebulaMask * _NebulaStrength;
 
-                // Dense procedural starfield, three interleaved layers for depth.
+                // Procedural starfield: three interleaved layers, each star a
+                // pixel-sized soft point at a random spot in its cell (not a
+                // square cell), with a steep magnitude distribution - many
+                // faint stars, a few bright ones - and a slight colour from
+                // its temperature (orange K/M to blue-white B/A).
+                float pixel = max(length(fwidth(viewDir)), 1e-5);
                 for (int layer = 0; layer < 3; layer++)
                 {
                     float scale = _StarDensity * (1.0 + layer * 0.6);
-                    float3 cell = floor(dir * scale + layer * 17.3);
+                    float3 p = dir * scale + layer * 17.3;
+                    float3 cell = floor(p);
                     float starSeed = hash13(cell + layer * 3.7);
-                    float starMask = step(0.9975, starSeed);
-                    float twinkle = hash13(cell + 91.7 + layer);
-                    float brightness = _StarBrightness * (0.5 + 0.5 * twinkle) / (1.0 + layer * 0.5);
-                    col += starMask * brightness;
+                    if (starSeed < 0.9965) continue;
+                    float3 centre = cell + 0.5 + (float3(hash13(cell + 11.1), hash13(cell + 23.7), hash13(cell + 37.3)) - 0.5) * 0.7;
+                    float d = length(p - centre) / scale;               // ~radians
+                    float sigma = pixel * 0.65;
+                    float glow = exp(-d * d / (2 * sigma * sigma));
+                    float mag = hash13(cell + 91.7 + layer);
+                    float brightness = _StarBrightness * (0.12 + 2.2 * pow(mag, 7)) / (1.0 + layer * 0.5);
+                    float3 tint = lerp(float3(1, .78, .58), float3(.72, .82, 1), hash13(cell + 57.1));
+                    tint = lerp(float3(1, 1, 1), tint, 0.55);
+                    col += glow * brightness * tint;
                 }
 
                 // The Sun's disc at its true angular size, limb-darkened, with a

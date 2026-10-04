@@ -121,6 +121,9 @@ public static class RocketPresets
         public StageDrop[] firstStageDrops;
         public StageSpec[] upperStages;
         public float payloadMass;
+        // The most the real vehicle could carry to low Earth orbit (kg); the
+        // payload slider stops here. Mutable at runtime: the pilot's choice.
+        public float payloadMax;
         public bool Staged => upperStages != null && upperStages.Length > 0;
         /// <summary>Everything above the first stage's propellant - the mass the
         /// flight model treats as dry at liftoff.</summary>
@@ -172,6 +175,7 @@ public static class RocketPresets
             },
             // Fairing (1.9 t, stays on for now) + a 15 t payload.
             payloadMass = 16900f,
+            payloadMax = 22800f,      // expendable, LEO
             // MECO at T+2:42, with the throttle down to 70% through Max Q
             // (T+52-85 s); leaves ~6 t residual.
             mecoSeconds = 162f,
@@ -212,6 +216,7 @@ public static class RocketPresets
             },
             // Hot staging at T+2:39, throttled to 60% through Max Q; the
             // ~26 t left is the booster's boostback/landing reserve.
+            payloadMax = 150000f,     // to LEO, as SpaceX quotes for Starship
             mecoSeconds = 159f,
             throttleProgram = new[] { 0f, 1f, 50f, 1f, 58f, .6f, 85f, .6f, 92f, 1f },
         },
@@ -258,6 +263,7 @@ public static class RocketPresets
             },
             // Vostok spacecraft (4.7 t) + shroud.
             payloadMass = 5000f,
+            payloadMax = 4730f + 270f, // Vostok spacecraft (4.73 t) + adapter
             // First stage: the four strap-ons shut down (and on the real
             // vehicle separate) at T+118 s; the core burns on alone to
             // depletion at ~T+5:15.
@@ -312,6 +318,7 @@ public static class RocketPresets
             },
             // Apollo spacecraft on top: CSM, LM, adapter, escape tower.
             payloadMass = 49900f,
+            payloadMax = 140000f,     // LEO (Skylab-class launch: ~140 t)
             // Apollo 11 S-IC: centre engine cutoff T+135.2 s, outboard
             // engine cutoff T+161.6 s (~34 t residual).
             mecoSeconds = 161.6f,
@@ -363,6 +370,7 @@ public static class RocketPresets
             // The RS-25s then run on to MECO at T+8:30: 104.5% rated power
             // (0.959 of the 109% this engine model is rated at), throttled
             // to 72% through Max Q (T+26-60 s).
+            payloadMax = 24400f,      // cargo bay, LEO at 28.5°
             mecoSeconds = 510f,
             throttleProgram = new[] { 0f, .959f, 26f, .959f, 30f, .66f, 56f, .66f, 60f, .959f },
         },

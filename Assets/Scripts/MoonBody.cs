@@ -24,8 +24,14 @@ using UnityEngine;
 /// </summary>
 public sealed class MoonBody : MonoBehaviour
 {
+    // NASA Moon fact sheet: mean radius 1,737.4 km, GM 4,902.8 km³/s² (mass
+    // 7.346e22 kg), surface gravity 1.62 m/s², escape speed 2.38 km/s,
+    // sidereal month 27.3217 d, synodic month 29.53 d, mean distance
+    // 384,400 km, eccentricity 0.0549, inclination 5.145° to the ecliptic,
+    // spin axis 1.54° from the ecliptic pole.
     public const double RadiusMeters = 1737400;
-    private const double GravitationalParameter = 4.9048695e12;   // m³/s²
+    public const double GravitationalParameter = 4.9028e12;   // m³/s²
+    public static double SurfaceGravity => GravitationalParameter / (RadiusMeters * RadiusMeters);   // 1.62 m/s²
     private const double ObliquityDeg = 23.4393;
     private const double CassiniTiltDeg = 1.543;
     private static readonly DateTime J2000 = new(2000, 1, 1, 12, 0, 0, DateTimeKind.Utc);
@@ -52,7 +58,8 @@ public sealed class MoonBody : MonoBehaviour
         // Lit by the Sun alone (MoonSurface.shader) - the scene's ambient
         // light is for daylight at the pad and would wash the phases out.
         var material = new Material(Shader.Find("Strauss Space/Moon Surface"));
-        material.mainTexture = Resources.Load<Texture2D>("Moon/moon_lroc_color_2k");
+        material.mainTexture = Resources.Load<Texture2D>("Moon/moon_lroc_color_4k") ?? Resources.Load<Texture2D>("Moon/moon_lroc_color_2k");
+        material.SetTexture("_SlopeTex", Resources.Load<Texture2D>("Moon/moon_slope_normal_4k"));
         renderer.sharedMaterial = material;
         renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         moon.transform.localScale = Vector3.one * (float)(2 * RadiusMeters * PlanetBody.WorldUnitsPerMeter);
@@ -142,10 +149,17 @@ public sealed class MoonBody : MonoBehaviour
         // One sidereal month ahead, sampled through the full series - the
         // real (perturbed, slightly non-closing) path, not an idealised ellipse.
         orbitLine.positionCount = OrbitSamples;
+        perigeeKm = double.MaxValue; apogeeKm = 0;
         for (var i = 0; i < OrbitSamples; i++)
         {
             Position(date.AddDays(27.321661 * i / OrbitSamples), out var dir, out var dist, out _, out _);
-            orbitLine.SetPosition(i, centre + EclipticToScene(dir, rotation) * (float)(dist * PlanetBody.WorldUnitsPerMeter));
+            var point = centre + EclipticToScene(dir, rotation) * (float)(dist * PlanetBody.WorldUnitsPerMeter);
+            orbitLine.SetPosition(i, point);
+            // Closest and farthest points of this month's path (they shift
+            // from month to month: the Sun stretches the orbit, perigee
+            // ranges ~356,400-370,400 km and apogee ~404,000-406,700 km).
+            if (dist / 1000 < perigeeKm) { perigeeKm = dist / 1000; perigeePoint = point; }
+            if (dist / 1000 > apogeeKm) { apogeeKm = dist / 1000; apogeePoint = point; }
         }
         var camera = view.GetComponent<Camera>();
         orbitLine.widthMultiplier = Vector3.Distance(camera.transform.position, centre) * .0012f;
@@ -195,18 +209,31 @@ public sealed class MoonBody : MonoBehaviour
     }
 
     private GUIStyle labelStyle;
+    private double perigeeKm, apogeeKm;
+    private Vector3 perigeePoint, apogeePoint;
     private void OnGUI()
     {
         if (Event.current.type != EventType.Repaint) return;
         var view = FindFirstObjectByType<AssemblyViewCamera>();
         if (view == null || view.MapBlend < .5f) return;
         var camera = view.GetComponent<Camera>();
-        var vp = camera.WorldToViewportPoint(transform.position);
-        if (vp.z <= 0 || vp.x < 0 || vp.x > 1 || vp.y < 0 || vp.y > 1) return;
         labelStyle ??= new GUIStyle(GUI.skin.label) { fontSize = 12, fontStyle = FontStyle.Bold };
-        labelStyle.normal.textColor = new Color(.85f, .85f, .9f);
-        GUI.Label(new Rect(vp.x * Screen.width + 8, (1 - vp.y) * Screen.height - 10, 320, 22),
-            "Moon · " + (DistanceMeters / 1000).ToString("N0") + " km · " + (IlluminatedFraction * 100).ToString("F0") + "% lit", labelStyle);
+        if (view.SolarBlend > .3f) return;   // next to Earth's label at that scale
+        Label(camera, transform.position, "Moon · " + (DistanceMeters / 1000).ToString("N0") + " km · " +
+            (IlluminatedFraction * 100).ToString("F0") + "% lit · g 1.62 m/s²", new Color(.85f, .85f, .9f));
+        if (orbitLine != null && orbitLine.positionCount > 0 && view.SolarBlend < .3f)
+        {
+            Label(camera, perigeePoint, "◆ Perigee " + perigeeKm.ToString("N0") + " km", new Color(1f, .75f, .45f));
+            Label(camera, apogeePoint, "◆ Apogee " + apogeeKm.ToString("N0") + " km", new Color(.55f, .75f, 1f));
+        }
+    }
+
+    private void Label(Camera camera, Vector3 world, string text, Color color)
+    {
+        var vp = camera.WorldToViewportPoint(world);
+        if (vp.z <= 0 || vp.x < 0 || vp.x > 1 || vp.y < 0 || vp.y > 1) return;
+        labelStyle.normal.textColor = color;
+        GUI.Label(new Rect(vp.x * Screen.width - 6, (1 - vp.y) * Screen.height - 10, 360, 22), text, labelStyle);
     }
 
     public readonly struct Vector3d

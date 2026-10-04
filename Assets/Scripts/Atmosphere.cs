@@ -134,7 +134,11 @@ public sealed class Atmosphere : MonoBehaviour
         material.SetFloat("_MieScatter", mieScattering * perUnit);
         material.SetFloat("_MieHeight", mieScaleHeightKm * unitsPerKm);
         material.SetFloat("_MieG", mieAnisotropy);
-        material.SetFloat("_SunIntensity", sunIntensity * (sun != null ? sun.intensity : 1f));
+        // True sunlight (inverse square only): the shader does its own
+        // shadowing and extinction, so not the scene light, which
+        // SolarSystem dims for Earth's shadow and reddens near the horizon.
+        var irradiance = SolarSystem.Instance != null ? SolarSystem.Instance.SunIrradianceScale : (sun != null ? sun.intensity : 1f);
+        material.SetFloat("_SunIntensity", sunIntensity * irradiance);
         material.SetFloat("_Saturation", saturation);
         material.SetVector("_SunDirection", toSun);
     }

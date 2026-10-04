@@ -70,6 +70,9 @@ public sealed class SolarSystem : MonoBehaviour
     public double DistanceMeters { get; private set; }
     public double OrbitalSpeed { get; private set; }         // m/s, Earth around the Sun
     public double SubsolarLatitude { get; private set; }     // deg = the Sun's declination
+    /// <summary>Sunlight strength at Earth's distance today (inverse square),
+    /// before any atmosphere or shadow - what the atmosphere shader uses.</summary>
+    public float SunIrradianceScale { get; private set; } = 1.1f;
     public double SunAngularDiameterDeg => 2 * Math.Asin(SunRadius / DistanceMeters) * Mathf.Rad2Deg;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
@@ -133,11 +136,10 @@ public sealed class SolarSystem : MonoBehaviour
             ? planet.GetSurfaceNormal((float)SubsolarLatitude, (float)longitude)
             : Vector3.up;
         transform.rotation = Quaternion.LookRotation(-toSun);
-        if (sun != null)
-        {
-            var au = distance / AstronomicalUnit;
-            sun.intensity = (float)(intensityAtOneAu / (au * au));
-        }
+        var au = distance / AstronomicalUnit;
+        SunIrradianceScale = (float)(intensityAtOneAu / (au * au));
+        Shader.SetGlobalVector("_SunWorldDir", toSun);
+        UpdateSceneLighting(toSun);
         Shader.SetGlobalVector("_SolarDirection", new Vector4(toSun.x, toSun.y, toSun.z, (float)(SunAngularDiameterDeg * .5 * Mathf.Deg2Rad)));
         // Stars are fixed in inertial space: the sky turns with the same angle.
         Shader.SetGlobalFloat("_SkyAngle", (float)(angle % (2 * Math.PI)));
@@ -146,6 +148,60 @@ public sealed class SolarSystem : MonoBehaviour
         // the solar system view that's the wrong place, and the true-size
         // sphere shows the Sun instead.
         if (view != null && view.SolarBlend > .05f) Shader.SetGlobalVector("_SolarDirection", Vector4.zero);
+    }
+
+    // The Sun is the only light. Ambient light is the sky: sunlight
+    // scattered by the air, so it's there by day near the ground and fades
+    // through twilight to (almost) nothing at night, in the upper atmosphere
+    // and in space. Direct sunlight reaching where the camera is looking is
+    // reddened by the air it crosses (orange low suns) and is cut off in
+    // Earth's shadow: below the horizon on the ground, inside the shadow
+    // cylinder in orbit. Planet and Moon shaders light themselves from
+    // _SunWorldDir and aren't affected by that cut-off.
+    private void UpdateSceneLighting(Vector3 toSun)
+    {
+        if (sun == null || planet == null) return;
+        if (view == null) view = FindFirstObjectByType<AssemblyViewCamera>();
+        var camera = view != null ? view.GetComponent<Camera>() : Camera.main;
+        var u = PlanetBody.WorldUnitsPerMeter;
+        var centre = planet.transform.position;
+        var mapView = view != null && view.MapBlend > .5f;
+        var probe = camera != null ? camera.transform.position : centre + Vector3.up * planet.Radius * u;
+        if (!mapView)
+        {
+            var rocket = FindFirstObjectByType<Rocket>();
+            if (rocket != null) probe = rocket.transform.position;
+        }
+        var r = (probe - centre) / u;
+        var altitude = r.magnitude - planet.Radius;
+        var up = r.normalized;
+        var sinElevation = Vector3.Dot(up, toSun);
+        var air = Mathf.Exp(-Mathf.Max(0f, altitude) / 8000f);
+
+        // Direct sunlight: Earth's shadow, then atmospheric extinction.
+        var along = Vector3.Dot(r, toSun);
+        var inShadow = altitude > 100000f
+            ? along < 0 && (r - along * toSun).magnitude < planet.Radius
+            : sinElevation < -.01f;
+        var visible = mapView ? 1f : inShadow ? 0f : altitude > 100000f ? 1f : Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(-.01f, .02f, sinElevation));
+        var elevationDeg = Mathf.Asin(Mathf.Clamp(sinElevation, -1f, 1f)) * Mathf.Rad2Deg;
+        var airmass = 1f / (Mathf.Max(sinElevation, 0f) + .50572f * Mathf.Pow(Mathf.Max(elevationDeg + 6.07995f, .5f), -1.6364f));
+        var tau = new Vector3(.15f, .21f, .36f) * airmass * air;   // Rayleigh + haze, sea level
+        var tint = mapView || altitude > 100000f ? Color.white
+            : new Color(Mathf.Exp(-tau.x), Mathf.Exp(-tau.y), Mathf.Exp(-tau.z));
+        var peak = Mathf.Max(tint.r, Mathf.Max(tint.g, tint.b));
+        sun.color = peak > 0 ? tint / peak : Color.white;
+        sun.intensity = SunIrradianceScale * visible * peak;
+
+        // Skylight: only where there's air above and the Sun is up (or just
+        // set - twilight).
+        var daylight = mapView ? 0f : Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(-.12f, .3f, sinElevation)) * air;
+        const float night = .006f;   // starlight / airglow
+        RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Trilight;
+        RenderSettings.ambientSkyColor = new Color(.42f, .55f, .72f) * (.55f * daylight) + Color.white * night;
+        RenderSettings.ambientEquatorColor = new Color(.40f, .44f, .47f) * (.45f * daylight) + Color.white * night;
+        RenderSettings.ambientGroundColor = new Color(.22f, .20f, .17f) * (.40f * daylight) + Color.white * night * .5f;
+        RenderSettings.reflectionIntensity = Mathf.Clamp01(daylight);
     }
 
     private static LineRenderer MakeLine(string name, Color color, bool loop)
@@ -221,6 +277,11 @@ public sealed class SolarSystem : MonoBehaviour
                 EarthHeliocentric(2 * Math.PI * i / OrbitSegments, out var x, out var y, out var z);
                 orbitLine.SetPosition(i, centre + EquatorialToScene(x - nx, y - ny, z - nz, angle) * PlanetBody.WorldUnitsPerMeter);
             }
+            // Perihelion (true anomaly 0, early January) and aphelion (early July).
+            EarthHeliocentric(0, out var px, out var py, out var pz);
+            EarthHeliocentric(Math.PI, out var ax, out var ay, out var az);
+            perihelionPoint = centre + EquatorialToScene(px - nx, py - ny, pz - nz, angle) * PlanetBody.WorldUnitsPerMeter;
+            aphelionPoint = centre + EquatorialToScene(ax - nx, ay - ny, az - nz, angle) * PlanetBody.WorldUnitsPerMeter;
             if (camera != null) orbitLine.widthMultiplier = Vector3.Distance(camera.transform.position, SunWorldPosition) * .0012f;
         }
         else orbitLine.positionCount = 0;
@@ -242,7 +303,7 @@ public sealed class SolarSystem : MonoBehaviour
         for (var i = 0; i < 8; i++) E -= (E - Eccentricity * Math.Sin(E) - meanAnomaly) / (1 - Eccentricity * Math.Cos(E));
         return 2 * Math.Atan2(Math.Sqrt(1 + Eccentricity) * Math.Sin(E / 2), Math.Sqrt(1 - Eccentricity) * Math.Cos(E / 2));
     }
-    private Vector3 axisLabel;
+    private Vector3 axisLabel, perihelionPoint, aphelionPoint;
 
     private GUIStyle mapLabelStyle;
     private void MapLabel(Camera camera, Vector3 world, string text, Color color)
@@ -295,12 +356,16 @@ public sealed class SolarSystem : MonoBehaviour
         if (view != null && Event.current.type == EventType.Repaint)
         {
             var camera = view.GetComponent<Camera>();
-            if (axisLine.positionCount > 0)
+            // The axis label only while Earth fills a good part of the view.
+            if (axisLine.positionCount > 0 && Vector3.Distance(camera.transform.position, planet.transform.position) < planet.Radius * PlanetBody.WorldUnitsPerMeter * 12)
                 MapLabel(camera, axisLabel, "Spin axis · tilted 23.44° to the orbit", new Color(1f, .55f, .45f));
             if (view.SolarBlend > .3f)
             {
                 MapLabel(camera, SunWorldPosition, "Sun", new Color(1f, .9f, .6f));
                 MapLabel(camera, planet.transform.position, "Earth", new Color(.5f, .8f, 1f));
+                var a = SemiMajorAxisAu * AstronomicalUnit / 1e9;
+                MapLabel(camera, perihelionPoint, "◆ Perihelion " + (a * (1 - Eccentricity)).ToString("F2") + " million km (≈Jan 3)", new Color(1f, .75f, .45f));
+                MapLabel(camera, aphelionPoint, "◆ Aphelion " + (a * (1 + Eccentricity)).ToString("F2") + " million km (≈Jul 4)", new Color(.55f, .75f, 1f));
             }
         }
         style ??= new GUIStyle(GUI.skin.label) { alignment = TextAnchor.UpperRight, fontSize = 12 };
