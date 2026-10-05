@@ -213,6 +213,7 @@ public sealed class MoonBody : MonoBehaviour
     private Vector3 perigeePoint, apogeePoint;
     private void OnGUI()
     {
+        if (LaunchMenu.Open) return;   // the launch menu covers the scene
         if (Event.current.type != EventType.Repaint) return;
         var view = FindFirstObjectByType<AssemblyViewCamera>();
         if (view == null || view.MapBlend < .5f) return;

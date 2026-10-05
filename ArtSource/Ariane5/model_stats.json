@@ -1,0 +1,19 @@
+{
+  "triangles": 9432,
+  "mesh_objects": 19,
+  "materials": 5,
+  "stages": [
+    "EAP_Left",
+    "EAP_Right",
+    "Fairing_A",
+    "Fairing_B",
+    "EPC",
+    "ESC"
+  ],
+  "bounds_m": {
+    "x": 12.56,
+    "y": 5.595,
+    "z": 53.0
+  },
+  "note": "Visual approximation; proportions and details are approximate, not scaled CAD."
+}

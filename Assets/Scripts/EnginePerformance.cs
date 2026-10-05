@@ -76,6 +76,16 @@ public static class EnginePerformance
             case "RaptorVac":return new EngineParameters{gimbalRange=0,gimbalRate=0,allowGimbal=false,dryMass=2100,vacuumThrust=2530000,vacuumIsp=380,exitDiameter=2.3f,mixtureRatio=3.6f,minimumThrottle=.4f,fuel="Methane",source="SpaceX Raptor Vacuum (Starship Ship)",dataStatus="Estimated simulation preset"};
             // RD-0109: Vostok-K Block E. 54.5 kN, Isp 323.5 s; steering nozzles
             // as an equivalent ±3°.
+            // Aerojet Rocketdyne RL10B-2 (SLS ICPS, Delta IV upper stage):
+            // 110.1 kN, Isp 465.5 s with its extendable carbon nozzle.
+            case "RL10B2":return new EngineParameters{gimbalRange=4,gimbalRate=8,dryMass=301,vacuumThrust=110100,vacuumIsp=465.5f,exitDiameter=2.15f,mixtureRatio=5.88f,fuel="LH2",source="Aerojet Rocketdyne RL10B-2 (SLS ICPS)",dataStatus="Published performance"};
+            // RL10C-1 (Atlas V Centaur): 101.8 kN, Isp 449.7 s.
+            case "RL10C1":return new EngineParameters{gimbalRange=4,gimbalRate=8,dryMass=190,vacuumThrust=101800,vacuumIsp=449.7f,exitDiameter=1.45f,mixtureRatio=5.88f,fuel="LH2",source="Aerojet Rocketdyne RL10C-1 (Atlas V Centaur III)",dataStatus="Published performance"};
+            // Safran Vulcain 2 (Ariane 5 EPC): 1,390 kN vacuum / 960 kN at
+            // sea level, Isp 431 s, not throttled in flight.
+            case "Vulcain2":p=new EngineParameters{gimbalRange=6,gimbalRate=10,dryMass=2100,vacuumThrust=1390000,vacuumIsp=431,mixtureRatio=6.1f,fuel="LH2",source="Safran Vulcain 2 (Ariane 5 ECA main stage)",dataStatus="Published performance / calibrated exit area"};p.exitDiameter=CalibratedDiameter(p.vacuumThrust,960000,1);return p;
+            // ArianeGroup HM7B (Ariane 5 ESC-A): 67 kN, Isp 446 s.
+            case "HM7B":return new EngineParameters{gimbalRange=4,gimbalRate=6,dryMass=165,vacuumThrust=67000,vacuumIsp=446,exitDiameter=.99f,mixtureRatio=5.0f,fuel="LH2",source="ArianeGroup HM7B (Ariane 5 ESC-A)",dataStatus="Published performance"};
             case "RD0109":return new EngineParameters{gimbalRange=3,gimbalRate=10,dryMass=121,vacuumThrust=54500,vacuumIsp=323.5f,exitDiameter=.5f,mixtureRatio=2.5f,source="Kosberg RD-0109 (Vostok-K Block E)",dataStatus="Published performance / estimated geometry"};
             // Space Shuttle OMS (AJ10-190): 26.7 kN each, Isp 316 s, MMH /
             // N2O4, ±6° gimbal.
@@ -122,6 +132,21 @@ public static class EnginePerformance
                 profileTime=new double[]{0,20,50,65,80,100,110,118,124},
                 profileFraction=new[]{1.0,1.03,.74,.72,.82,.78,.6,.3,0},
                 source="Space Shuttle RSRM; thrust profile approximated from published thrust-time curve"};
+            // SLS five-segment booster: ~16 MN peak vacuum thrust, 631 t of
+            // PBAN, 95 t inert, Isp 269 s, 3.87 m nozzle exit; burns ~126 s
+            // (separation T+2:12).
+            case "SLS_SRB":return new SolidMotor{title="SLS 5-segment SRB",peakVacuumThrust=16000000,vacuumIsp=269,
+                exitArea=Math.PI*3.87*3.87/4,propellantMass=631000,inertMass=95000,
+                profileTime=new double[]{0,10,25,45,60,80,100,115,124,128},
+                profileFraction=new[]{.95,1.0,.97,.80,.78,.88,.82,.6,.25,0},
+                source="Northrop Grumman five-segment RSRMV; thrust profile approximated"};
+            // Ariane 5 EAP (P241): 240 t of HTPB each, 33 t inert, Isp
+            // 274.5 s, ~6.6 MN peak; burns ~130 s (separation T+2:20).
+            case "P241":return new SolidMotor{title="Ariane 5 EAP P241",peakVacuumThrust=6600000,vacuumIsp=274.5,
+                exitArea=Math.PI*2.99*2.99/4,propellantMass=240000,inertMass=33000,
+                profileTime=new double[]{0,5,20,40,60,80,100,115,125,135},
+                profileFraction=new[]{.85,1.0,.98,.82,.78,.80,.73,.5,.3,0},
+                source="Ariane 5 EAP / P241 booster; thrust profile approximated"};
             default:return null;
         }
     }

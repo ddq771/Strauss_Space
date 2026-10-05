@@ -46,6 +46,9 @@ public sealed class DroppedStage : MonoBehaviour
         dropped.body = body;
         var size = bounds.size / PlanetBody.WorldUnitsPerMeter;
         dropped.area = Mathf.Max(1f, size.x * size.y * .5f);
+        // Spent stages heat up too - and burn up if they come in fast enough.
+        ReentryHeating.AttachToDebris(dropped, body, FindFirstObjectByType<PlanetBody>(),
+            Mathf.Max(1f, Mathf.Max(size.x, size.y, size.z)), Mathf.Max(.5f, Mathf.Min(size.x, size.y, size.z)));
         All.Add(dropped);
         return dropped;
     }

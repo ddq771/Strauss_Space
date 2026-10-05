@@ -1,0 +1,18 @@
+{
+  "triangles": 26096,
+  "mesh_objects": 19,
+  "materials": 9,
+  "stages": [
+    "SRB_Left",
+    "SRB_Right",
+    "LAS",
+    "Core",
+    "ICPS"
+  ],
+  "bounds_m": {
+    "x": 18.01,
+    "y": 8.94,
+    "z": 98.1
+  },
+  "note": "Visual approximation; proportions and details are approximate, not scaled CAD."
+}

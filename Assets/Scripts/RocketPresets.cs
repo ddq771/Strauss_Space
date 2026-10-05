@@ -31,8 +31,36 @@ public static class RocketPresets
     /// A stage that takes over after the one below it is spent. Times are
     /// seconds after this stage's own ignition.
     /// </summary>
+    /// <summary>
+    /// Thermal protection of a stage for re-entry heating (ReentryHeating).
+    /// Bare structure fails above bareLimitC; if the stage has a heat
+    /// shield (shieldLimitC > 0), the part of the surface within
+    /// shieldHalfAngle of shieldAxis (rocket-local) survives up to
+    /// shieldLimitC. shieldAxis zero = find it from the body model's tile
+    /// meshes (the Ship's tiles, the orbiter's black belly).
+    /// </summary>
+    [System.Serializable]
+    public struct HeatProtection
+    {
+        public Vector3 shieldAxis;
+        public float shieldHalfAngle, shieldLimitC, bareLimitC;
+        public const float DefaultBareLimitC = 1100f;   // stage structure breaks up / melts
+        public float BareLimit => bareLimitC > 0 ? bareLimitC : DefaultBareLimitC;
+        public bool HasShield => shieldLimitC > 0;
+        public static HeatProtection Tiles(float limitC, float halfAngle) => new HeatProtection { shieldLimitC = limitC, shieldHalfAngle = halfAngle };
+        public static HeatProtection Base(float limitC) => new HeatProtection { shieldAxis = Vector3.down, shieldLimitC = limitC, shieldHalfAngle = 50 };
+    }
+
     public struct StageSpec
     {
+        public HeatProtection heat;
+        // Attitude control with the engines off (RCS thrusters, the Ship's
+        // flaps): the most angular acceleration it can give, deg/s².
+        // 0 = the default for an upper stage (small RCS).
+        public float rcsDegPerSec2;
+        // Aerodynamic control surfaces (flaps, elevons, grid fins): their
+        // authority grows with dynamic pressure - extra deg/s² per kPa.
+        public float aeroControlPerKPa;
         public string name;
         // Stage_* groups of the body model (RocketBodies/{key}_stages.json)
         // that belong to this stage - they fall away when it separates.
@@ -124,6 +152,10 @@ public static class RocketPresets
         // The most the real vehicle could carry to low Earth orbit (kg); the
         // payload slider stops here. Mutable at runtime: the pilot's choice.
         public float payloadMax;
+        public string description;      // one or two lines for the launch menu
+        public HeatProtection firstStageHeat;
+        public float firstStageRcs;      // deg/s² with the engines off; 0 = none (most boosters)
+        public float firstStageAeroControl;   // deg/s² per kPa of dynamic pressure (grid fins)
         public bool Staged => upperStages != null && upperStages.Length > 0;
         /// <summary>Everything above the first stage's propellant - the mass the
         /// flight model treats as dry at liftoff.</summary>
@@ -148,6 +180,10 @@ public static class RocketPresets
             // produces for a count of 9 with no special-casing needed).
             // Aero: no fins (grid fins stowed): centre of pressure well forward - unstable.
             centerOfPressure = .72f, normalForceSlope = 2.2f,
+            // Booster comes back engines-first behind its base heat shield,
+            // turned by its cold-gas thrusters and grid fins.
+            firstStageHeat = HeatProtection.Base(1300f), firstStageRcs = 1.5f, firstStageAeroControl = 1.5f,
+            description = "SpaceX's workhorse since 2010: nine Merlins on a reusable booster, one Merlin Vacuum above.",
             name = "Falcon 9", bodyModelKey = "Falcon9", engineId = "Merlin1D", engineCount = 9,
             // 70 m overall, the real Block 5 height (was 87 m before the
             // to-scale body model came in).
@@ -189,6 +225,8 @@ public static class RocketPresets
             // (no staging yet).
             // Aero: flaps fore and aft on the Ship, finless booster - mildly unstable.
             centerOfPressure = .62f, normalForceSlope = 2.6f,
+            firstStageHeat = HeatProtection.Base(1300f), firstStageRcs = 1f, firstStageAeroControl = 1f,
+            description = "The largest rocket ever flown: 33 Raptors on Super Heavy, hot-staged under the Ship.",
             name = "Starship", bodyModelKey = "Starship", engineId = "Raptor2", engineCount = 33,
             // 121.3 m overall, the full Super Heavy + Ship stack (Flight 5).
             bodyDiameter = 9f, bodyHeight = 95.3f, noseHeight = 18f, engineHeight = 8f,
@@ -209,6 +247,8 @@ public static class RocketPresets
                 new StageSpec
                 {
                     name = "Ship", modelStages = new[] { "Ship" },
+                    // Hexagonal tiles on the windward half; enters belly-first.
+                    heat = HeatProtection.Tiles(1600f, 80f), rcsDegPerSec2 = 2f, aeroControlPerKPa = 2f,   // RCS + four flaps
                     engines = new[] { "Raptor2", "Raptor2", "Raptor2", "RaptorVac", "RaptorVac", "RaptorVac" },
                     fuelType = "Methane", fuelMass = 260900f, oxidizerMass = 939100f, dryMass = 100000f, diameter = 9f,
                     separationDelay = .5f, ignitionDelay = .5f,
@@ -231,6 +271,7 @@ public static class RocketPresets
             // RD-108 core (745 kN) - 4.03 MN together.
             // Aero: flared strap-ons with fins: centre of pressure low - stable.
             centerOfPressure = .3f, normalForceSlope = 4f,
+            description = "Gagarin's 1961 launcher: the R-7 core and four strap-ons, then the Block E upper stage.",
             name = "Vostok", bodyModelKey = "Vostok", engineId = "RD107", engineCount = 5, coreEngineId = "RD108",
             // 38.4 m overall, the real Vostok-K height (was 39 m).
             bodyDiameter = 2.99f, bodyHeight = 27.4f, noseHeight = 8f, engineHeight = 3f,
@@ -275,6 +316,7 @@ public static class RocketPresets
             // load (upper stages/Apollo stack not modeled separately).
             // Aero: four large fins: centre of pressure low - stable.
             centerOfPressure = .33f, normalForceSlope = 3.5f,
+            description = "Apollo's Moon rocket, 1967-73: five F-1s, then the S-II and S-IVB on hydrogen.",
             name = "Saturn V", bodyModelKey = "SaturnV", engineId = "F1", engineCount = 5,
             // 110.6 m overall, the real Apollo stack height.
             bodyDiameter = 10.1f, bodyHeight = 94.6f, noseHeight = 13f, engineHeight = 3f,
@@ -335,6 +377,7 @@ public static class RocketPresets
             // burn out at ~2 min.
             // Aero: orbiter wings and tail add lift aft of centre - near neutral.
             centerOfPressure = .45f, normalForceSlope = 4f,
+            description = "1981-2011: two solid boosters and three RS-25s fed by the External Tank, then the orbiter's OMS.",
             name = "Space Shuttle", bodyModelKey = "SpaceShuttle", engineId = "RS25", engineCount = 3,
             solidBoosterId = "SRB", solidBoosterCount = 2,
             // 56.1 m overall, the real stack height.
@@ -360,6 +403,8 @@ public static class RocketPresets
                 new StageSpec
                 {
                     name = "Orbiter (OMS)", modelStages = new[] { "Orbiter" },
+                    // Black HRSI tiles and RCC on the belly / nose / wing edges.
+                    heat = HeatProtection.Tiles(1650f, 75f), rcsDegPerSec2 = 2f, aeroControlPerKPa = 1.5f,   // 44 RCS thrusters + elevons/body flap
                     engines = Engines("OMS", 2), fuelType = "MMH",
                     fuelMass = 3100f, oxidizerMass = 5100f, dryMass = 79900f, diameter = 5.2f,
                     burnSeconds = 140f,
@@ -373,6 +418,116 @@ public static class RocketPresets
             payloadMax = 24400f,      // cargo bay, LEO at 28.5°
             mecoSeconds = 510f,
             throttleProgram = new[] { 0f, .959f, 26f, .959f, 30f, .66f, 56f, .66f, 60f, .959f },
+        },
+        new()
+        {
+            // SLS Block 1, as flown on Artemis I (16 Nov 2022): 98.1 m,
+            // ~2,610 t at liftoff, 39.1 MN.
+            description = "NASA's Artemis Moon rocket: two five-segment boosters, four RS-25s on the core, ICPS and Orion on top.",
+            name = "SLS Block 1", bodyModelKey = "SLS", engineId = "RS25", engineCount = 4,
+            solidBoosterId = "SLS_SRB", solidBoosterCount = 2,
+            bodyDiameter = 8.4f, bodyHeight = 80.1f, noseHeight = 12f, engineHeight = 6f,
+            hullColor = new Color(0.80f, 0.42f, 0.16f), dragCoefficient = 0.5f,
+            // Core stage: 144 t LH2 + 843 t LOX.
+            fuelType = "LH2", fuelCapacity = 2032.5f, fuelDiameter = 8.4f,
+            oxidizerCapacity = 738.8f, oxidizerDiameter = 8.4f,
+            // Core stage 85.3 t dry + LVSA 4.2 t + the 7.4 t Launch Abort
+            // System (jettisoned at T+3:15).
+            dryMass = 96900f,
+            firstStageName = "Core stage + boosters",
+            firstStageModelStages = new[] { "Core" },
+            firstStageDrops = new[]
+            {
+                new StageDrop { time = 132f, modelStages = new[] { "SRB_Left", "SRB_Right" }, solids = true },
+                new StageDrop { time = 195f, modelStages = new[] { "LAS" }, mass = 7400f },
+            },
+            upperStages = new[]
+            {
+                // ICPS: one RL10B-2, 27.2 t of hydrogen/oxygen, burns ~18 min.
+                new StageSpec
+                {
+                    name = "ICPS", modelStages = new[] { "ICPS" },
+                    engines = Engines("RL10B2", 1), fuelType = "LH2",
+                    fuelMass = 3956f, oxidizerMass = 23264f, dryMass = 3490f, diameter = 5.0f,
+                    separationDelay = 8f, ignitionDelay = 12f,
+                },
+            },
+            payloadMass = 26520f,     // Orion at translunar injection
+            payloadMax = 95000f,      // to LEO
+            // Core MECO at T+8:04; RS-25s at 109%, throttled to 85% through Max Q.
+            mecoSeconds = 484f,
+            throttleProgram = new[] { 0f, 1f, 30f, 1f, 35f, .78f, 62f, .78f, 67f, 1f },
+        },
+        new()
+        {
+            // Ariane 5 ECA (long fairing): 53 m, ~780 t at liftoff.
+            description = "Europe's heavy lifter, 1996-2023 (and the James Webb launcher): two P241 solids, Vulcain 2 core, ESC-A upper stage.",
+            name = "Ariane 5 ECA", bodyModelKey = "Ariane5", engineId = "Vulcain2", engineCount = 1,
+            solidBoosterId = "P241", solidBoosterCount = 2,
+            bodyDiameter = 5.4f, bodyHeight = 41f, noseHeight = 8f, engineHeight = 4f,
+            hullColor = new Color(0.93f, 0.93f, 0.93f), dragCoefficient = 0.5f,
+            // EPC: 24.7 t LH2 + 150.4 t LOX.
+            fuelType = "LH2", fuelCapacity = 347.9f, fuelDiameter = 5.4f,
+            oxidizerCapacity = 131.8f, oxidizerDiameter = 5.4f,
+            // EPC 14.7 t dry + the 2.7 t long fairing (jettisoned T+3:11).
+            dryMass = 17375f,
+            firstStageName = "EPC + boosters",
+            firstStageModelStages = new[] { "EPC" },
+            firstStageDrops = new[]
+            {
+                new StageDrop { time = 140f, modelStages = new[] { "EAP_Left", "EAP_Right" }, solids = true },
+                new StageDrop { time = 191f, modelStages = new[] { "Fairing_A", "Fairing_B" }, mass = 2675f },
+            },
+            upperStages = new[]
+            {
+                // ESC-A: one HM7B, 14.9 t of propellant, burns ~16 min; dry
+                // mass includes the vehicle equipment bay and SYLDA.
+                new StageSpec
+                {
+                    name = "ESC-A", modelStages = new[] { "ESC" },
+                    engines = Engines("HM7B", 1), fuelType = "LH2",
+                    fuelMass = 2480f, oxidizerMass = 12420f, dryMass = 6200f, diameter = 5.4f,
+                    separationDelay = 6f, ignitionDelay = 4f,
+                },
+            },
+            payloadMass = 10000f,     // a GTO pair
+            payloadMax = 21000f,      // to LEO
+            // The EPC burns to depletion (~T+8:50); Vulcain 2 isn't throttled.
+        },
+        new()
+        {
+            // Atlas V 401 (no solids, 4-m fairing, single-engine Centaur): 58.3 m, ~335 t.
+            description = "ULA's workhorse since 2002: a Russian RD-180 on the Common Core Booster, then Centaur with one RL10.",
+            name = "Atlas V 401", bodyModelKey = "AtlasV", engineId = "RD180", engineCount = 1,
+            bodyDiameter = 3.81f, bodyHeight = 46.3f, noseHeight = 9f, engineHeight = 3f,
+            hullColor = new Color(0.72f, 0.43f, 0.22f), dragCoefficient = 0.5f,
+            // CCB: 76.4 t RP-1 + 207.7 t LOX.
+            fuelType = "RP-1", fuelCapacity = 94.3f, fuelDiameter = 3.81f,
+            oxidizerCapacity = 182.1f, oxidizerDiameter = 3.81f,
+            // CCB 21.05 t dry + interstage 1 t + the 2.1 t fairing (T+3:30).
+            dryMass = 24180f,
+            firstStageName = "Common Core Booster",
+            firstStageModelStages = new[] { "Booster" },
+            firstStageDrops = new[]
+            {
+                new StageDrop { time = 210f, modelStages = new[] { "Fairing_A", "Fairing_B" }, mass = 2127f },
+            },
+            upperStages = new[]
+            {
+                // Centaur III: one RL10C-1, 20.8 t of propellant, up to ~14 min.
+                new StageSpec
+                {
+                    name = "Centaur", modelStages = new[] { "Centaur" },
+                    engines = Engines("RL10C1", 1), fuelType = "LH2",
+                    fuelMass = 3030f, oxidizerMass = 17800f, dryMass = 2316f, diameter = 3.05f,
+                    separationDelay = 6f, ignitionDelay = 10f,
+                },
+            },
+            payloadMass = 5000f,
+            payloadMax = 9797f,       // to LEO, 28.7°
+            // RD-180 throttled through Max Q, and back late in the burn to
+            // hold the g-load; booster engine cutoff ~T+4:10 at depletion.
+            throttleProgram = new[] { 0f, 1f, 30f, 1f, 40f, .92f, 75f, .92f, 85f, 1f, 170f, 1f, 190f, .75f },
         },
     };
 }

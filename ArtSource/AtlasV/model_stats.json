@@ -1,0 +1,17 @@
+{
+  "triangles": 6540,
+  "mesh_objects": 11,
+  "materials": 6,
+  "stages": [
+    "Fairing_A",
+    "Fairing_B",
+    "Booster",
+    "Centaur"
+  ],
+  "bounds_m": {
+    "x": 4.2,
+    "y": 4.205,
+    "z": 58.2
+  },
+  "note": "Visual approximation; proportions and details are approximate, not scaled CAD."
+}

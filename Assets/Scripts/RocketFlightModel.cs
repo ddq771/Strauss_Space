@@ -333,7 +333,13 @@ public sealed class RocketFlightModel : MonoBehaviour
         var velocity=body.linearVelocity/PlanetBody.WorldUnitsPerMeter;
         var speed=velocity.magnitude;
         if(speed<0.05f){Drag=0;DynamicPressure=0;return;}
-        Drag=0.5*AirDensity*speed*speed*dragCoefficient*MachDragFactor(speed/SpeedOfSound)*FrontalArea;
+        // Nose-on the body meets the air with its cross-section; turned
+        // side-on (a Ship or orbiter entering belly-first) with its whole
+        // side, length × diameter, at a crossflow drag coefficient of ~1.2.
+        var cosAlpha=Mathf.Abs(Vector3.Dot(transform.up,velocity/speed));
+        var sin2=1-cosAlpha*cosAlpha;
+        var sideArea=rocket.ActiveHeight*2*Math.Sqrt(FrontalArea/Math.PI);
+        Drag=0.5*AirDensity*speed*speed*(dragCoefficient*MachDragFactor(speed/SpeedOfSound)*FrontalArea*cosAlpha+CrossflowDrag*sideArea*sin2);
         var direction=-velocity/speed;
         body.AddForce(direction*(float)(Drag*PlanetBody.WorldUnitsPerMeter),ForceMode.Force);
         ApplyAeroTorques(body,velocity,speed);
@@ -400,6 +406,8 @@ public sealed class RocketFlightModel : MonoBehaviour
 
     public static string Clock(double seconds)=>((int)(seconds/60))+":"+((int)seconds%60).ToString("00");
 
+    private const double CrossflowDrag=1.2;   // side-on cylinder
+
     // Cross-section the drag acts on: the body's own (collider) radius.
     private CapsuleCollider frontalCapsule;
     private double FrontalArea
@@ -429,7 +437,7 @@ public sealed class RocketFlightModel : MonoBehaviour
 
     public bool Prepare(double throttle)
     {
-        if(crashed){LiquidThrust=0;FuelFlow=0;OxidizerFlow=0;Status="Impact — vehicle destroyed. Return to assembly to rebuild.";return false;}
+        if(crashed){LiquidThrust=0;FuelFlow=0;OxidizerFlow=0;if(!Status.StartsWith("Burned up"))Status="Impact — vehicle destroyed. Return to assembly to rebuild.";return false;}
         Bind();if(!tanksInitialized)Refill();UpdateMass();LiquidThrust=0;FuelFlow=0;OxidizerFlow=0;
         UpdateSolidThrust();
         UpdateAtmosphere();
@@ -455,9 +463,15 @@ public sealed class RocketFlightModel : MonoBehaviour
         LiquidThrust=totalThrust;FuelFlow=totalFuelFlow;OxidizerFlow=totalOxidizerFlow;
         Status="Ready";return true;
     }
+    /// <summary>Thrust (N) each engine socket produced on the last powered step - for the exhaust plumes.</summary>
+    public readonly float[] SocketThrust=new float[RocketAssemblyController.MaxSockets];
+    public float LastStepTime{get;private set;}=-1;
+
     public void Step(Rigidbody body,float throttle,float dt)
     {
+        System.Array.Clear(SocketThrust,0,SocketThrust.Length);
         if(!Prepare(throttle)){rocket.StopEngine();return;}
+        LastStepTime=Time.time;
         var fraction=Math.Min(1,Math.Min(fuelRemaining/Math.Max(1e-12,FuelFlow*dt),oxidizerRemaining/Math.Max(1e-12,OxidizerFlow*dt)));
         var programmed=Math.Min(throttle,ProgramThrottle);
         for(var i=0;i<assembly.SocketCount;i++)
@@ -466,6 +480,7 @@ public sealed class RocketFlightModel : MonoBehaviour
             var r=EnginePerformance.Evaluate(p,programmed,Pressure);
             // Scene lengths use kilometres; forces must use the same scale as gravity.
             body.AddForceAtPosition(assembly.GetThrustDirection(i)*(float)(r.thrust*fraction*PlanetBody.WorldUnitsPerMeter),assembly.GetSocketPosition(i),ForceMode.Force);
+            if(i<SocketThrust.Length)SocketThrust[i]=(float)(r.thrust*fraction);
         }
         fuelRemaining=Mathf.Max(0,fuelRemaining-(float)(FuelFlow*dt*fraction));
         oxidizerRemaining=Mathf.Max(0,oxidizerRemaining-(float)(OxidizerFlow*dt*fraction));
@@ -519,6 +534,22 @@ public sealed class RocketFlightModel : MonoBehaviour
         Status="Impact — vehicle destroyed. Return to assembly to rebuild.";
         StartCoroutine(ImpactEffect(point,normal,size));
         StartCoroutine(ImpactDebris(point,normal));
+    }
+
+    /// <summary>Destroyed in flight by re-entry heating: a fireball where it was, nothing left to fly.</summary>
+    public void BurnUp(string reason)
+    {
+        if(crashed)return;
+        var body=GetComponent<Rigidbody>();
+        var point=body.worldCenterOfMass;
+        var normal=planet!=null?(point-planet.transform.position).normalized:Vector3.up;
+        rocket.StopEngine();body.linearVelocity=Vector3.zero;body.angularVelocity=Vector3.zero;body.isKinematic=true;
+        crashed=true;LiquidThrust=0;SolidThrust=0;solidPropellant=0;FuelFlow=0;OxidizerFlow=0;
+        foreach(var surface in GetComponentsInChildren<Renderer>())if(surface.enabled){impactHidden.Add(surface);surface.enabled=false;}
+        float size=10f+3f*Mathf.Pow(Mathf.Max(1f,(float)TotalMass),1f/3f);
+        fuelRemaining=0;oxidizerRemaining=0;UpdateMass();
+        Status="Burned up on re-entry ("+reason+"). Return to assembly to rebuild.";
+        StartCoroutine(ImpactEffect(point,normal,size));
     }
 
     private System.Collections.IEnumerator ImpactDebris(Vector3 point,Vector3 normal)

@@ -1,0 +1,30 @@
+{
+  "key": "AtlasV",
+  "height_m": 58.3,
+  "stages": [
+    {
+      "name": "Fairing_A",
+      "bottom_m": 48.2,
+      "top_m": 58.3,
+      "note": "Payload fairing half, jettisoned at ~3 min 30 s"
+    },
+    {
+      "name": "Fairing_B",
+      "bottom_m": 48.2,
+      "top_m": 58.3,
+      "note": "Payload fairing half, jettisoned at ~3 min 30 s"
+    },
+    {
+      "name": "Booster",
+      "bottom_m": 0.1,
+      "top_m": 38.6,
+      "note": "Common Core Booster: 1 RD-180 (2 nozzles); separates at ~4 min 20 s"
+    },
+    {
+      "name": "Centaur",
+      "bottom_m": 35.6,
+      "top_m": 54.2,
+      "note": "Centaur III upper stage: 1 RL10C-1, with the payload"
+    }
+  ]
+}

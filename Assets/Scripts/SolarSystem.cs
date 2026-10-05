@@ -352,6 +352,7 @@ public sealed class SolarSystem : MonoBehaviour
     private GUIStyle style;
     private void OnGUI()
     {
+        if (LaunchMenu.Open) return;   // the launch menu covers the scene
         if (NeedsInitialize) return;
         if (view != null && Event.current.type == EventType.Repaint)
         {

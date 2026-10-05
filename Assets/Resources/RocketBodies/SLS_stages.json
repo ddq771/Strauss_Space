@@ -1,0 +1,36 @@
+{
+  "key": "SLS",
+  "height_m": 98.1,
+  "stages": [
+    {
+      "name": "SRB_Left",
+      "bottom_m": 0.0,
+      "top_m": 54.0,
+      "note": "Five-segment Solid Rocket Booster, separates at ~2 min 12 s"
+    },
+    {
+      "name": "SRB_Right",
+      "bottom_m": 0.0,
+      "top_m": 54.0,
+      "note": "Five-segment Solid Rocket Booster, separates at ~2 min 12 s"
+    },
+    {
+      "name": "LAS",
+      "bottom_m": 89.0,
+      "top_m": 98.1,
+      "note": "Launch Abort System tower and ogive fairing, jettisoned at ~3 min 15 s"
+    },
+    {
+      "name": "Core",
+      "bottom_m": 0.7,
+      "top_m": 77.1,
+      "note": "Core stage: 4 RS-25, with the LVSA; separates at ~8 min 10 s"
+    },
+    {
+      "name": "ICPS",
+      "bottom_m": 69.3,
+      "top_m": 89.0,
+      "note": "Interim Cryogenic Propulsion Stage (1 RL10B-2) with Orion"
+    }
+  ]
+}

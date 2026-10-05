@@ -370,6 +370,18 @@ public sealed class AssemblyViewCamera : MonoBehaviour
         localSiteHidden=false;
     }
 
+    /// <summary>Close in on the rocket - the part still flying - wherever it is.</summary>
+    public void ShowRocket()
+    {
+        var rocket = FindFirstObjectByType<Rocket>();
+        if (rocket == null || transform.parent == null) return;
+        // Centre of the active stack, relative to the rocket's pivot (its
+        // full height's middle).
+        flightFocusOffset = Vector3.up * ((rocket.ActiveBottom + rocket.ActiveTop) * .5f - rocket.TotalHeight * .5f);
+        target = transform.parent.InverseTransformPoint(rocket.transform.TransformPoint(flightFocusOffset * PlanetBody.WorldUnitsPerMeter));
+        desiredDistance = Mathf.Max(40f, rocket.ActiveHeight * 2.4f);
+    }
+
     public void ShowPlanet()
     {
         if (planet == null) return;
@@ -397,6 +409,7 @@ public sealed class AssemblyViewCamera : MonoBehaviour
 
     private void OnGUI()
     {
+        if (LaunchMenu.Open) return;   // the launch menu covers the scene
         var heading = new GUIStyle(GUI.skin.label) { fontSize = 22 };
         heading.normal.textColor = Color.white;
         GUI.Label(new Rect(24, 18, 520, 36), "KENYA  /  ROCKET ASSEMBLY", heading);
@@ -409,6 +422,7 @@ public sealed class AssemblyViewCamera : MonoBehaviour
         {
             if (GUI.Button(new Rect(24, 86, 145, 32), "Earth / Planet")) desiredDistance=16000000f;
             if (SolarSystem.Instance != null && GUI.Button(new Rect(338, 86, 145, 32), "Solar system")) desiredDistance=3e11f;
+            if (GUI.Button(new Rect(495, 86, 145, 32), "Rocket")) ShowRocket();
             if (GUI.Button(new Rect(181, 86, 145, 32), "Assembly site"))
             {
                 target=new Vector3(0,18,0);

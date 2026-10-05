@@ -240,9 +240,11 @@ public sealed class RocketAssemblyController : MonoBehaviour
                 "enable \"Allow gimballed mounting\" on the frame to steer.",
                 new GUIStyle(GUI.skin.label){wordWrap=true});
         }
-        GUILayout.Label("Shift/Ctrl: throttle up/down. Z: full throttle. X: cut throttle. Space: toggle ignition. G: stage. W/S/A/D: pitch/yaw. T: SAS.",new GUIStyle(GUI.skin.label){wordWrap=true});
+        GUILayout.Label("Shift/Ctrl: throttle up/down. Z: full throttle. X: cut throttle. Space: toggle ignition. G: stage. W/S/A/D: pitch/yaw. T: SAS. R: re-entry attitude (shield into the airflow).",new GUIStyle(GUI.skin.label){wordWrap=true});
         GUILayout.Label(new GUIContent(sasEnabled?"SAS: on - keys set turn rate, release to hold attitude":"SAS: off - keys deflect the engines directly",
             "The flight computer steers by gimballing the engines (each within its real range and speed). No control with the engines off."));
+        var reentryOn=GUILayout.Toggle(reentryAttitude,new GUIContent(" Re-entry attitude (R)","Engines off: RCS turns the heat shield into the oncoming air and holds it there."));
+        if(reentryOn!=reentryAttitude)SetReentryAttitude(reentryOn);
         GUILayout.Label("Throttle: "+(commandedThrottle*100).ToString("F0")+"%");
         var previousThrottle=commandedThrottle;
         commandedThrottle=GUILayout.HorizontalSlider(commandedThrottle,0f,1);
@@ -286,6 +288,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
                 trajectory.WillImpact?"Suborbital · impact in "+TrajectoryDisplay.Clock(trajectory.TimeToImpact):"Suborbital");
         }
         GUILayout.Label("Speed: "+flight.Speed.ToString("F1")+" m/s · Mach "+flight.Mach.ToString("F2"));
+        ReentryGUI();
         GUILayout.Label(new GUIContent("Orbital speed: "+flight.OrbitalSpeed.ToString("F0")+" m/s", "Speed relative to the stars: ground speed plus Earth's rotation (~463 m/s eastward at the equator). ~7,800 m/s holds a low orbit."));
         GUILayout.Label("Pressure: "+(flight.Pressure/1000).ToString("F1")+" kPa · Air: "+(flight.AirTemperature-273.15).ToString("F0")+" °C");
         GUILayout.Label(new GUIContent("Vertical speed: "+flight.VerticalSpeed.ToString("+0.0;-0.0;0.0")+" m/s", "Radial velocity relative to the planet: positive ascending, negative descending."));
@@ -480,11 +483,13 @@ public sealed class RocketAssemblyController : MonoBehaviour
         footprint=Mathf.Max(3.7f,2*outerRadius+largestDiameter);
         if(bodyThrust){lowestEngine=0;footprint=rocket.BodyDiameter;}
         if(layout.frameInstalled && !bodyThrust)Beam("Central Mount",Vector3.zero,new Vector3(0,-.25f,0),1.4f);
+        var bodyPositions=bodyThrust?BodyThrustPositions():null;
         for(var i=0;i<SocketCount;i++)
         {
             var p=bodyThrust?Vector3.zero:Vector3.down*.3f;
             var onRing=layout.sockets==3 || i>0;
-            if(onRing)
+            if(bodyPositions!=null)p=bodyPositions[i];
+            else if(onRing)
             {
                 float radius; int indexOnRing, countOnRing;
                 if(layout.sockets==3){radius=outerRadius;indexOnRing=i;countOnRing=3;}
@@ -531,6 +536,43 @@ public sealed class RocketAssemblyController : MonoBehaviour
         Dock();
         flight?.Configure(layout.fuelType,layout.fillFraction);
         flight?.AssemblyChanged();
+    }
+
+    // Thrust points for a preset body, laid out symmetrically so thrust
+    // passes through the axis and steering doesn't twist the vehicle:
+    // when only some engines gimbal (the Ship: 3 sea-level Raptors steer,
+    // 3 Raptor Vacuums are fixed) the steering engines take an inner ring
+    // and the fixed ones an outer ring between them, as on the real
+    // vehicle; a pair sits either side of the axis (the Shuttle's OMS).
+    // Uniform sets keep the centre + rings layout (null).
+    private Vector3[] BodyThrustPositions()
+    {
+        var n=SocketCount;
+        var result=new Vector3[n];
+        var steering=new List<int>();var fixedEngines=new List<int>();
+        for(var i=0;i<n;i++)
+        {
+            var e=GetParameters(i);
+            if(e!=null && e.allowGimbal && e.gimbalRange>0)steering.Add(i);else fixedEngines.Add(i);
+        }
+        var diameter=Mathf.Max(1f,rocket.BodyDiameter);
+        void Ring(List<int> group,float radius,float phase)
+        {
+            if(group.Count==1){result[group[0]]=Vector3.zero;return;}
+            for(var k=0;k<group.Count;k++)
+            {
+                var a=phase+k*2*Mathf.PI/group.Count;
+                result[group[k]]=new Vector3(Mathf.Cos(a),0,Mathf.Sin(a))*radius;
+            }
+        }
+        if(steering.Count>0 && fixedEngines.Count>0)
+        {
+            Ring(steering,diameter*.16f,0);
+            Ring(fixedEngines,diameter*.34f,Mathf.PI/Mathf.Max(1,fixedEngines.Count));
+            return result;
+        }
+        if(n==2){var all=new List<int>{0,1};Ring(all,diameter*.3f,0);return result;}
+        return null;   // uniform set: the usual centre + rings layout
     }
 
     private void Beam(string name,Vector3 a,Vector3 b,float width)
@@ -627,6 +669,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         stagePromptShown=false;stageStartPropellant=-1;
         dropsDone.Clear();
         DroppedStage.ClearAll();
+        GetComponent<ReentryHeating>()?.ResetHeat();tileAxisStage=-1;reentryAttitude=false;
     }
 
     public string StageName(int index)
@@ -685,6 +728,14 @@ public sealed class RocketAssemblyController : MonoBehaviour
         stagePromptShown=false;
         notice=DropName(drops[i])+" separated at T+"+RocketFlightModel.Clock(now)+".";
         Banner(DropName(drops[i]).ToUpperInvariant()+" SEPARATION");
+    }
+
+    private static string DropKind(RocketPresets.StageDrop drop)
+    {
+        var n=string.Join(" ",drop.modelStages);
+        if(n.Contains("Fairing"))return "payload fairing";
+        if(n.Contains("LAS"))return "launch abort system";
+        return "strap-on boosters";
     }
 
     private static string DropName(RocketPresets.StageDrop drop)=>string.Join(", ",drop.modelStages).Replace("_"," ");
@@ -798,7 +849,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
                 if(drops!=null)
                     for(var i=drops.Length-1;i>=0;i--)
                         if(!dropsDone.Contains(i))
-                            blocks.Add(("  ↳ "+DropName(drops[i]),drops[i].solids?"solid boosters · drop at "+RocketFlightModel.Clock(drops[i].time):"strap-ons · drop at "+RocketFlightModel.Clock(drops[i].time),
+                            blocks.Add(("  ↳ "+DropName(drops[i]),(drops[i].solids?"solid boosters":DropKind(drops[i]))+" · drop at "+RocketFlightModel.Clock(drops[i].time),
                                 drops[i].solids?flight.SolidBoosterCount>0?1f:0f:1f,3,false));
             }
         }
@@ -946,6 +997,70 @@ public sealed class RocketAssemblyController : MonoBehaviour
         }
     }
 
+    // --- Re-entry ---------------------------------------------------------
+    /// <summary>Thermal protection of the stack flying now (the stage burning, or the one about to light).</summary>
+    public RocketPresets.HeatProtection CurrentHeatProtection
+    {
+        get
+        {
+            if(activePresetIndex<0)return default;
+            var p=RocketPresets.All[activePresetIndex];
+            var k=separated?stageIndex+1:stageIndex;
+            var heat=k==0?p.firstStageHeat:k-1<p.upperStages.Length?p.upperStages[k-1].heat:default;
+            if(heat.HasShield && heat.shieldAxis==Vector3.zero)heat.shieldAxis=TileAxis();
+            return heat;
+        }
+    }
+
+    // Which side of the vehicle the heat-shield tiles are on, from the body
+    // model's tile meshes still attached (rocket-local, across the axis).
+    private Vector3 cachedTileAxis;private int tileAxisStage=-1;
+    private Vector3 TileAxis()
+    {
+        var key=stageIndex*2+(separated?1:0);
+        if(key==tileAxisStage)return cachedTileAxis;
+        tileAxisStage=key;cachedTileAxis=Vector3.back;
+        var sum=Vector3.zero;var count=0;
+        foreach(var r in rocket.GetComponentsInChildren<Renderer>())
+            if(r.name.IndexOf("Tiles",StringComparison.OrdinalIgnoreCase)>=0){sum+=transform.InverseTransformPoint(r.bounds.center);count++;}
+        if(count>0)
+        {
+            var offset=sum/count;offset.y=0;
+            if(offset.sqrMagnitude>1e-12f)cachedTileAxis=offset.normalized;
+        }
+        return cachedTileAxis;
+    }
+
+    public void SetReentryAttitude(bool on)
+    {
+        reentryAttitude=on;holdingAttitude=false;
+        notice=on?"Re-entry attitude: turning the "+(CurrentHeatProtection.HasShield?"heat shield":"nose")+" into the oncoming air (RCS, engines off).":"Re-entry attitude off - holding attitude.";
+    }
+
+    public void ReportBurnUp(string reason)
+    {
+        notice="Burned up on re-entry at T+"+RocketFlightModel.Clock(flight.MissionTime)+": "+reason+".";
+        Banner("BURNED UP ON RE-ENTRY");
+    }
+
+    private void ReentryGUI()
+    {
+        var heating=GetComponent<ReentryHeating>();
+        if(heating==null || heating.HeatFlux<5000)return;
+        var style=new GUIStyle(GUI.skin.label){wordWrap=true};
+        var worst=heating.HasShield
+            ? Mathf.Max((float)(heating.HottestShieldC/heating.ShieldLimitC),(float)(heating.HottestBareC/heating.BareLimitC))
+            : (float)(heating.HottestBareC/heating.BareLimitC);
+        style.normal.textColor=worst>.85f?new Color(1f,.35f,.3f):worst>.6f?new Color(1f,.75f,.3f):Color.white;
+        var text="Re-entry heating: "+(heating.HeatFlux/1000).ToString("N0")+" kW/m²\n";
+        if(heating.HasShield)
+            text+="Heat shield "+heating.HottestShieldC.ToString("N0")+" / "+heating.ShieldLimitC.ToString("N0")+" °C · ";
+        text+="bare structure "+heating.HottestBareC.ToString("N0")+" / "+heating.BareLimitC.ToString("N0")+" °C";
+        if(heating.HasShield)
+            text+=heating.ShieldFacing>.7f?"\nHeat shield facing the flow":heating.ShieldFacing>.3f?"\nHeat shield partly turned away":"\nBARE SIDE INTO THE FLOW - turn the shield forward";
+        GUILayout.Label(new GUIContent(text,"Stagnation-point heat flux (Sutton-Graves) and the hottest patch of shielded and bare surface. Over the limit, the vehicle burns up."),style);
+    }
+
     private static string EngineSummary(string[] engines)
     {
         var counts=new Dictionary<string,int>();
@@ -1062,8 +1177,11 @@ public sealed class RocketAssemblyController : MonoBehaviour
 
     private void ReadFlightInput()
     {
+        if(IgnorePilotInput)return;   // tests drive pilotInput themselves
         if(Application.isFocused && !IgnorePilotInput && GUIUtility.keyboardControl==0 && Input.GetKeyDown(KeyCode.T))
         { sasEnabled=!sasEnabled; holdingAttitude=false; }
+        if(Application.isFocused && !IgnorePilotInput && GUIUtility.keyboardControl==0 && Input.GetKeyDown(KeyCode.R))
+            SetReentryAttitude(!reentryAttitude);
         var input=Vector2.zero;
         if(Application.isFocused && !IgnorePilotInput && GUIUtility.keyboardControl==0)
         {
@@ -1078,8 +1196,141 @@ public sealed class RocketAssemblyController : MonoBehaviour
         if(rocket!=null && catalog!=null && rocket.Launched)UpdateFlightGimbals();
     }
 
+    private float rollCommand;            // degrees of differential gimbal
+    private const float SasRollRate=1.5f;  // 1/s: roll-rate damping gain
+
+    // δ (degrees) of tangential gimbal that gives roll torque 'torque'.
+    private float RollDeflection(float torque,float thrust)
+    {
+        float leverSum=0,all=0;
+        for(var i=0;i<SocketCount;i++)
+        {
+            var e=GetParameters(i);
+            if(e==null)continue;
+            all+=e.vacuumThrust;
+        }
+        if(all<=0)return 0;
+        for(var i=0;i<SocketCount;i++)
+        {
+            var e=GetParameters(i);
+            if(e==null || !e.allowGimbal || e.gimbalRange<=0)continue;
+            var r=sockets[i].localPosition;
+            leverSum+=thrust*e.vacuumThrust/all*new Vector2(r.x,r.z).magnitude*PlanetBody.WorldUnitsPerMeter;
+        }
+        if(leverSum<=1e-9f)return 0;
+        return Mathf.Clamp(torque/leverSum*Mathf.Rad2Deg,-3f,3f);
+    }
+
+    private float GimballedThrustFraction()
+    {
+        float all=0,steering=0;
+        for(var i=0;i<SocketCount;i++)
+        {
+            var e=GetParameters(i);
+            if(e==null)continue;
+            all+=e.vacuumThrust;
+            if(e.allowGimbal && e.gimbalRange>0)steering+=e.vacuumThrust;
+        }
+        return all>0?Mathf.Max(.05f,steering/all):1f;
+    }
+
+    // --- Attitude control with the engines off ---------------------------
+    // RCS thrusters (and the Ship's flaps) turn the vehicle while it coasts,
+    // within the stage's angular-acceleration limit - the same SAS: keys set
+    // a turn rate, release to hold. R (re-entry attitude) points the heat
+    // shield into the oncoming air (the base shield = engines first; no
+    // shield = nose first) and holds it there.
+    private bool reentryAttitude;
+    public bool ReentryAttitude=>reentryAttitude;
+
+    public float CurrentRcs
+    {
+        get
+        {
+            if(activePresetIndex<0)return .5f;
+            var p=RocketPresets.All[activePresetIndex];
+            var k=separated?stageIndex+1:stageIndex;
+            if(k==0)return p.firstStageRcs;
+            var r=k-1<p.upperStages.Length?p.upperStages[k-1].rcsDegPerSec2:0;
+            return r>0?r:.6f;
+        }
+    }
+
+    // Extra control from aerodynamic surfaces, per kPa of dynamic pressure.
+    private float CurrentAeroControl
+    {
+        get
+        {
+            if(activePresetIndex<0)return 0;
+            var p=RocketPresets.All[activePresetIndex];
+            var k=separated?stageIndex+1:stageIndex;
+            return k==0?p.firstStageAeroControl:k-1<p.upperStages.Length?p.upperStages[k-1].aeroControlPerKPa:0;
+        }
+    }
+
+    private void ApplyAttitudeControl()
+    {
+        var body=rocket.GetComponent<Rigidbody>();
+        if(body.isKinematic || flight.Crashed || TimeWarp.OnRails)return;
+        var powered=(rocket.EngineEnabled || flight.SolidBurning) && flight.Thrust>0;
+        var dynamicPressureKPa=(float)(.5*flight.AirDensity*flight.Speed*flight.Speed/1000);
+        var limit=(CurrentRcs+CurrentAeroControl*dynamicPressureKPa)*Mathf.Deg2Rad;
+        var omega=transform.InverseTransformDirection(body.angularVelocity);
+        if(powered)
+        {
+            // Under thrust the engines steer pitch and yaw, but a single
+            // central engine can't stop a roll - real upper stages do that
+            // with roll thrusters (the S-IVB's APS, Centaur's RCS, Falcon's
+            // cold gas). Damp any spin about the long axis.
+            var rcs=Mathf.Max(CurrentRcs,.6f)*Mathf.Deg2Rad;
+            var roll=Mathf.Clamp(-omega.y*2f,-rcs,rcs);
+            if(Mathf.Abs(omega.y)>1e-5f)body.AddRelativeTorque(Vector3.Scale(body.inertiaTensor,new Vector3(0,roll,0)),ForceMode.Force);
+            return;
+        }
+        if(limit<=0)return;
+        var input=pilotInput;
+        Vector3 alpha;
+        if(input.sqrMagnitude>.0001f)
+        {
+            holdingAttitude=false;reentryAttitude=false;
+            alpha=sasEnabled?(new Vector3(input.x,0,input.y)*SasMaxRate*Mathf.Deg2Rad-omega)*SasRateGain
+                            :new Vector3(input.x,0,input.y)*limit;
+        }
+        else if(sasEnabled || reentryAttitude)
+        {
+            if(reentryAttitude)
+            {
+                // The side to put into the flow, and where the air comes from.
+                var heat=CurrentHeatProtection;
+                var side=heat.HasShield && heat.shieldAxis!=Vector3.zero?heat.shieldAxis.normalized:Vector3.up;
+                var velocity=flight.GroundVelocity;
+                if(velocity.sqrMagnitude>1)
+                {
+                    // Shield toward the direction of motion: it meets the air first.
+                    var oncoming=velocity.normalized;
+                    holdAttitude=Quaternion.FromToRotation(transform.TransformDirection(side),oncoming)*transform.rotation;
+                    holdingAttitude=true;
+                }
+            }
+            if(!holdingAttitude){holdAttitude=transform.rotation;holdingAttitude=true;}
+            (Quaternion.Inverse(transform.rotation)*holdAttitude).ToAngleAxis(out var angle,out var axis);
+            if(angle>180)angle-=360;
+            var error=axis*(angle*Mathf.Deg2Rad);
+            if(float.IsNaN(error.x))error=Vector3.zero;
+            // Stiffness matched to the authority available: a 10° error
+            // asks for the full limit (weak RCS in vacuum = gentle, flaps
+            // biting in thick air = stiff enough to beat the aero torque).
+            var w=Mathf.Clamp(Mathf.Sqrt(limit/.175f),.3f,3f);const float zeta=.9f;
+            alpha=error*(w*w)-omega*(2*zeta*w);
+        }
+        else return;
+        alpha=new Vector3(Mathf.Clamp(alpha.x,-limit,limit),Mathf.Clamp(alpha.y,-limit,limit),Mathf.Clamp(alpha.z,-limit,limit));
+        body.AddRelativeTorque(Vector3.Scale(body.inertiaTensor,alpha),ForceMode.Force);
+    }
+
     private void UpdateFlightGimbals()
     {
+        ApplyAttitudeControl();
         if(mountFrame==null || !mountFrame.CanGimbal)return;
         var input=pilotInput;
         var body=rocket.GetComponent<Rigidbody>();
@@ -1091,6 +1342,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         // torque of −L·T·sin θ about that axis (thrust acts below the
         // centre of mass), which is why the signs below are negated.
         Vector2 command;
+        rollCommand=0;
         if(!powered){ command=Vector2.zero; holdingAttitude=false; }
         else if(sasEnabled)
         {
@@ -1113,10 +1365,17 @@ public sealed class RocketAssemblyController : MonoBehaviour
             }
             var inertia=body.inertiaTensor;
             var lever=Mathf.Max(1e-6f,Vector3.Distance(body.worldCenterOfMass,cluster.position));
-            var authority=lever*thrust;
+            // Only the engines that swivel steer: the Ship's three Raptor
+            // Vacuums (and any fixed mount) add thrust but no control
+            // torque, so count just the gimballing share.
+            var authority=lever*thrust*GimballedThrustFraction();
             command=new Vector2(
                 Mathf.Asin(Mathf.Clamp(-inertia.x*alpha.x/authority,-1f,1f))*Mathf.Rad2Deg,
                 Mathf.Asin(Mathf.Clamp(-inertia.z*alpha.z/authority,-1f,1f))*Mathf.Rad2Deg);
+            // Roll: there are no roll thrusters, so - like the real vehicles -
+            // the off-axis engines swivel in opposite directions around the
+            // ring (each along its own tangent) to stop any spin.
+            rollCommand=RollDeflection(inertia.y*(-omega.y*SasRollRate),thrust);
         }
         else command=-input*RocketMountFrame.PreviewAngleLimit*2;
 
@@ -1127,7 +1386,15 @@ public sealed class RocketAssemblyController : MonoBehaviour
             var parameters=GetParameters(i);
             var range=parameters!=null && parameters.allowGimbal?parameters.gimbalRange:0f;
             var rate=parameters!=null?parameters.gimbalRate:0f;
-            var target=Vector2.ClampMagnitude(command,range);
+            var target=command;
+            if(rollCommand!=0 && range>0)
+            {
+                // Tangential deflection for engine i at r=(x,z) from the
+                // axis: (θ,φ)=-δ·(x,z)/|r| gives roll torque +T·δ·|r|.
+                var r=sockets[i].localPosition;var radius=new Vector2(r.x,r.z).magnitude;
+                if(radius>.01f)target+=-rollCommand*new Vector2(r.x,r.z)/radius;
+            }
+            target=Vector2.ClampMagnitude(target,range);
             gimbalAngles[i]=Vector2.MoveTowards(gimbalAngles[i],target,rate*Time.deltaTime);
             mountFrame.SetAngle(i,gimbalAngles[i],range);
             if(range>0){shown+=gimbalAngles[i];count++;}
@@ -1148,6 +1415,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
             return;
         }
         flightGimbal=Vector2.zero;
+        if(LaunchMenu.Open)return;
         if(Input.GetKeyDown(KeyCode.Delete) && GUIUtility.keyboardControl==0 && !locked)DeleteSelection();
         if(HandleEngineToggleKey())return;
         // A locked preset can still be launched (above) but its parts
@@ -1219,6 +1487,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
                 "% throttle ("+(flight.Thrust/1e6).ToString("F2")+" MN vs "+(flight.TotalMass/1000).ToString("N0")+" t). Add or upgrade engines, or carry less propellant.";
             return;
         }
+        GetComponent<ReentryHeating>()?.ResetHeat();
         rocket.StartEngine(commandedThrottle);
         if(!rocket.Launched)notice=flight.Status;
     }
@@ -1535,13 +1804,27 @@ public sealed class RocketAssemblyController : MonoBehaviour
         GUILayout.Space(12);
     }
 
+    public bool IsPresetLoaded=>activePresetIndex>=0;
+
+    private GUIStyle backStyle;
+
     private void OnGUI()
     {
-        if(catalog==null)return;
+        if(catalog==null || LaunchMenu.Open)return;
         if(!menuReported && Event.current.type==EventType.Repaint)
         {menuReported=true;Debug.Log("ROCKET_ASSEMBLY_MENU_RENDERED");}
         GUI.enabled=true;
         if(activePresetIndex>=0)StagingStackGUI();
+        // A real rocket chosen from the launch menu: no side panel on the
+        // pad, just a small way back to the menu and the launch control
+        // (everything else was set there).
+        if(locked && !rocket.Launched)
+        {
+            backStyle??=new GUIStyle(GUI.skin.button){fontSize=13};
+            if(GUI.Button(new Rect(24,PanelTop,96,30),"◂ Back",backStyle))GetComponent<LaunchMenu>()?.ShowPayload(activePresetIndex);
+            if(GUI.Button(new Rect(128,PanelTop,150,30),"LAUNCH (Space)",backStyle))TryLaunch();
+            return;
+        }
         GUILayout.BeginArea(LeftPanelRect,GUI.skin.box);
         if(rocket.Launched)
         {
@@ -1550,6 +1833,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
             GUILayout.EndScrollView();GUILayout.EndArea();
             return;
         }
+        if(GUILayout.Button("◂ Main menu",GUILayout.Height(26))){GetComponent<LaunchMenu>()?.Show();GUILayout.EndArea();GUIUtility.ExitGUI();}
         GUILayout.Label("ROCKET COMPONENTS");
         GUILayout.Label("Space also launches at the current throttle.",new GUIStyle(GUI.skin.label){wordWrap=true});
         if(GUILayout.Button("Launch",GUILayout.Height(34)))
@@ -1570,15 +1854,12 @@ public sealed class RocketAssemblyController : MonoBehaviour
         {
             GUILayout.Label("REAL ROCKET: "+activePresetName.ToUpperInvariant());
             GUILayout.Label("This is a fixed configuration - engines, tanks and body are locked. Use \"Custom build\" to edit an assembly by hand instead.",new GUIStyle(GUI.skin.label){wordWrap=true});
+            if(GUILayout.Button("Change payload / rocket",GUILayout.Height(32)))GetComponent<LaunchMenu>()?.ShowPayload(activePresetIndex);
             if(GUILayout.Button("Custom build",GUILayout.Height(32)))ExitPreset();
         }
         else
         {
-            GUILayout.Label("REAL ROCKETS");
-            GUILayout.Label("Pick one for a fixed, realistic configuration, or build your own below.",new GUIStyle(GUI.skin.label){wordWrap=true});
-            for(var i=0;i<RocketPresets.All.Length;i++)
-                if(GUILayout.Button(RocketPresets.All[i].name,GUILayout.Height(30)))LoadPreset(i);
-            GUILayout.Space(12);
+            GUILayout.Label("CUSTOM BUILD",new GUIStyle(GUI.skin.label){fontStyle=FontStyle.Bold});
             category=GUILayout.Toolbar(category,new[]{"Engines","Frames","Tanks"});
             if(category==0)
             {

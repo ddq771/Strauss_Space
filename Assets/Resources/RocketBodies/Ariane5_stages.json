@@ -1,0 +1,42 @@
+{
+  "key": "Ariane5",
+  "height_m": 53.0,
+  "stages": [
+    {
+      "name": "EAP_Left",
+      "bottom_m": 0.0,
+      "top_m": 31.6,
+      "note": "EAP P241 solid booster, separates at ~2 min 20 s"
+    },
+    {
+      "name": "EAP_Right",
+      "bottom_m": 0.0,
+      "top_m": 31.6,
+      "note": "EAP P241 solid booster, separates at ~2 min 20 s"
+    },
+    {
+      "name": "Fairing_A",
+      "bottom_m": 40.8,
+      "top_m": 53.0,
+      "note": "Payload fairing half, jettisoned at ~3 min 11 s"
+    },
+    {
+      "name": "Fairing_B",
+      "bottom_m": 40.8,
+      "top_m": 53.0,
+      "note": "Payload fairing half, jettisoned at ~3 min 11 s"
+    },
+    {
+      "name": "EPC",
+      "bottom_m": 0.5,
+      "top_m": 34.1,
+      "note": "EPC main stage: 1 Vulcain 2; separates at ~8 min 50 s"
+    },
+    {
+      "name": "ESC",
+      "bottom_m": 34.1,
+      "top_m": 47.8,
+      "note": "ESC-A upper stage (1 HM7B) with the payload"
+    }
+  ]
+}

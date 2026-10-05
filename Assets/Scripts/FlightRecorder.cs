@@ -25,6 +25,10 @@ using UnityEngine;
 ///   G-force       g     felt acceleration (thrust + drag, not gravity):
 ///                       1 g sitting on the pad, 0 g coasting
 ///
+/// Each time the vehicle enters a new stage (a staged real rocket's next
+/// stage lights) the file gets <see cref="StageGapLines"/> blank lines, so
+/// the stages read as separate blocks.
+///
 /// Files go to Assets/Data in the editor (next to the example), or
 /// persistentDataPath/FlightLogs in a build.
 /// </summary>
@@ -33,6 +37,7 @@ public sealed class FlightRecorder : MonoBehaviour
 {
     public const string Header = "height,velocity,acceleration,drag,torque,fuel,mass,time,temperature,tilt,G-force";
     private const double StandardGravity = 9.80665;
+    private const int StageGapLines = 3;
 
     [Tooltip("Seconds of simulated flight time between CSV rows.")]
     [SerializeField] private float sampleInterval = 2f;
@@ -44,6 +49,7 @@ public sealed class FlightRecorder : MonoBehaviour
     private Rigidbody body;
     private StreamWriter writer;
     private double elapsed, nextSample;
+    private int recordedStage;
     private Vector3 previousVelocity, previousAngularVelocity;
     private Vector3 acceleration, angularAcceleration;
 
@@ -88,6 +94,14 @@ public sealed class FlightRecorder : MonoBehaviour
             return;
         }
 
+        // A new stage: leave a gap in the file before its rows.
+        var stage = assembly != null ? assembly.StageIndex : 0;
+        if (stage != recordedStage)
+        {
+            recordedStage = stage;
+            for (var i = 0; i < StageGapLines; i++) writer.WriteLine();
+        }
+
         // Simulated seconds: on rails (×100, ×1000) each step covers more.
         elapsed += dt * TimeWarp.ClockMultiplier;
         // Log the impact itself as a final row, then stop - nothing
@@ -117,6 +131,7 @@ public sealed class FlightRecorder : MonoBehaviour
         writer = new StreamWriter(CurrentFile, false) { AutoFlush = true };
         writer.WriteLine(Header);
         elapsed = 0;
+        recordedStage = assembly != null ? assembly.StageIndex : 0;
         // The first physics step after release would otherwise read the
         // whole jump from rest as one step's acceleration.
         acceleration = Vector3.zero;

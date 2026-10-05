@@ -340,6 +340,7 @@ public sealed class TrajectoryDisplay : MonoBehaviour
 
     private void OnGUI()
     {
+        if (LaunchMenu.Open) return;   // the launch menu covers the scene
         if (!HasOrbit || viewCamera == null || Event.current.type != EventType.Repaint) return;
         labelStyle ??= new GUIStyle(GUI.skin.label) { fontStyle = FontStyle.Bold, fontSize = 13 };
         var cyan = new Color(.4f, .9f, 1f);
