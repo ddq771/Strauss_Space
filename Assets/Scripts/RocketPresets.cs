@@ -20,10 +20,13 @@ using UnityEngine;
 ///   engine parts: the body itself produces thrust - engineCount of
 ///   engineId's real performance, applied at the base of the body and
 ///   steered by gimballing (RocketAssemblyController.Rebuild).
-/// - Every preset flies as one non-separating vehicle. The models carry
-///   their stages (Stage_* objects in each body prefab) for a future
-///   staging system, but nothing detaches yet - the real separate-then-
-///   relight sequences are not simulated.
+/// - Staged presets separate for real: each stage's Stage_* parts in the
+///   body model detach (RocketAssemblyController.Separate / Drop) and the
+///   next stage lights on the real timeline. Strap-ons, fairings, shrouds,
+///   interstage rings and escape towers drop off mid-burn as StageDrops.
+/// - Simplified: physics treats the vehicle as one cylinder of the body
+///   diameter with a fixed drag coefficient, and the Space Shuttle flies as
+///   an in-line stack rather than a side-mounted orbiter.
 /// </summary>
 public static class RocketPresets
 {
@@ -159,13 +162,45 @@ public static class RocketPresets
         public bool Staged => upperStages != null && upperStages.Length > 0;
         /// <summary>Everything above the first stage's propellant - the mass the
         /// flight model treats as dry at liftoff.</summary>
+        // Payload fairing (or nose shroud) chosen off in the launch menu:
+        // its mass comes off whichever stage carries it, it isn't drawn or
+        // jettisoned, and the bare payload adds drag.
+        public bool fairingOff;
+        public static bool IsFairingDrop(StageDrop d) =>
+            d.modelStages != null && System.Array.Exists(d.modelStages, n => n.Contains("Fairing") || n.Contains("Shroud"));
+        private static float FairingMassOf(StageDrop[] drops)
+        {
+            float m = 0;
+            if (drops != null) foreach (var d in drops) if (IsFairingDrop(d)) m += d.mass;
+            return m;
+        }
+        /// <summary>Fairing mass carried by stage k (0 = first stage).</summary>
+        public float FairingMass(int k) =>
+            k == 0 ? FairingMassOf(firstStageDrops) : k - 1 < (upperStages?.Length ?? 0) ? FairingMassOf(upperStages[k - 1].drops) : 0;
+        public bool HasFairing
+        {
+            get
+            {
+                if (!Staged) return false;
+                for (var k = 0; k <= upperStages.Length; k++) if (FairingMass(k) > 0) return true;
+                return false;
+            }
+        }
+        /// <summary>Dry mass of stage k as flown (without the fairing if it's off).</summary>
+        public float StageDry(int k) =>
+            (k == 0 ? dryMass : upperStages[k - 1].dryMass) - (fairingOff ? FairingMass(k) : 0);
+
         public float LiftoffDryMass
         {
             get
             {
                 if (!Staged) return dryMass;
-                var total = dryMass + payloadMass;
-                foreach (var s in upperStages) total += s.dryMass + s.fuelMass + s.oxidizerMass;
+                var total = StageDry(0) + payloadMass;
+                for (var k = 1; k <= upperStages.Length; k++)
+                {
+                    var s = upperStages[k - 1];
+                    total += StageDry(k) + s.fuelMass + s.oxidizerMass;
+                }
                 return total;
             }
         }
@@ -205,12 +240,15 @@ public static class RocketPresets
                 {
                     name = "Second stage", modelStages = new[] { "SecondStage" },
                     engines = Engines("MerlinVac", 1), fuelType = "RP-1",
-                    fuelMass = 27600f, oxidizerMass = 65100f, dryMass = 3900f, diameter = 3.66f,
+                    // 3.9 t dry + the 1.9 t fairing riding on it until jettison.
+                    fuelMass = 27600f, oxidizerMass = 65100f, dryMass = 5800f, diameter = 3.66f,
                     separationDelay = 3f, ignitionDelay = 7f,
+                    // Fairing halves jettisoned ~T+3:30, 38 s into the burn.
+                    drops = new[] { new StageDrop { time = 38f, modelStages = new[] { "Fairing_A", "Fairing_B" }, mass = 1900f } },
                 },
             },
-            // Fairing (1.9 t, stays on for now) + a 15 t payload.
-            payloadMass = 16900f,
+            // A 15 t payload under the fairing.
+            payloadMass = 15000f,
             payloadMax = 22800f,      // expendable, LEO
             // MECO at T+2:42, with the throttle down to 70% through Max Q
             // (T+52-85 s); leaves ~6 t residual.
@@ -221,8 +259,8 @@ public static class RocketPresets
         {
             // First stage only: Super Heavy's 33 Raptors (74.4 MN at sea
             // level) lift the whole stack - the Ship's 6 engines don't fire
-            // until after separation. Propellant is still the full stack's
-            // (no staging yet).
+            // until after separation, when the Ship lights on its own
+            // propellant (hot staging).
             // Aero: flaps fore and aft on the Ship, finless booster - mildly unstable.
             centerOfPressure = .62f, normalForceSlope = 2.6f,
             firstStageHeat = HeatProtection.Base(1300f), firstStageRcs = 1f, firstStageAeroControl = 1f,
@@ -282,7 +320,8 @@ public static class RocketPresets
             oxidizerCapacity = 155.6f, oxidizerDiameter = 2.99f,
             // Staged: core Block A (6.9 t dry) + 4 strap-ons (3.8 t dry each)
             // + Block E + Vostok spacecraft = ~285 t at liftoff.
-            dryMass = 22100f,
+            // (+ the 0.55 t nose shroud until it's jettisoned.)
+            dryMass = 22650f,
             firstStageName = "Blocks A + B/V/G/D",
             firstStageModelStages = new[] { "Core" },
             // The strap-ons shut down and fall away at T+118 s; the core keeps
@@ -290,6 +329,8 @@ public static class RocketPresets
             firstStageDrops = new[]
             {
                 new StageDrop { time = 118.5f, modelStages = new[] { "Booster_B", "Booster_V", "Booster_G", "Booster_D" }, mass = 15200f },
+                // Nose shroud over the spacecraft jettisoned at T+2:36.
+                new StageDrop { time = 156f, modelStages = new[] { "Shroud" }, mass = 550f },
             },
             upperStages = new[]
             {
@@ -302,7 +343,7 @@ public static class RocketPresets
                     fuelMass = 1800f, oxidizerMass = 4500f, dryMass = 1440f, diameter = 2.66f,
                 },
             },
-            // Vostok spacecraft (4.7 t) + shroud.
+            // Vostok spacecraft (4.73 t) + adapter; the shroud is in dryMass.
             payloadMass = 5000f,
             payloadMax = 4730f + 270f, // Vostok spacecraft (4.73 t) + adapter
             // First stage: the four strap-ons shut down (and on the real
@@ -335,14 +376,19 @@ public static class RocketPresets
             upperStages = new[]
             {
                 // S-II: lights T+164.0 (0.7 s separation + 1.7 s ullage),
-                // centre J-2 off T+460.6, cutoff T+548.2. 40.8 t dry with the
-                // S-IC/S-II interstage ring (which really drops ~30 s after
-                // ignition - left attached for now).
+                // centre J-2 off T+460.6, cutoff T+548.2. Dry 40.8 t with the
+                // 5.2 t S-IC/S-II interstage ring (dropped T+193.5) + the
+                // 4.2 t launch escape tower riding above (jettisoned T+197.9).
                 new StageSpec
                 {
-                    name = "S-II", modelStages = new[] { "Interstage", "SII" },
+                    name = "S-II", modelStages = new[] { "SII" },
                     engines = Engines("J2", 5), fuelType = "LH2",
-                    fuelMass = 72700f, oxidizerMass = 386000f, dryMass = 40800f, diameter = 10.1f,
+                    fuelMass = 72700f, oxidizerMass = 386000f, dryMass = 44970f, diameter = 10.1f,
+                    drops = new[]
+                    {
+                        new StageDrop { time = 29.5f, modelStages = new[] { "Interstage" }, mass = 5200f },
+                        new StageDrop { time = 33.9f, modelStages = new[] { "LES" }, mass = 4170f },
+                    },
                     burnSeconds = 384.2f, engineCutoffs = new[] { 296.6f, 0f },
                     separationDelay = .7f, ignitionDelay = 1.7f,
                 },
@@ -358,8 +404,9 @@ public static class RocketPresets
                     separationDelay = .8f, ignitionDelay = 3.2f,
                 },
             },
-            // Apollo spacecraft on top: CSM, LM, adapter, escape tower.
-            payloadMass = 49900f,
+            // Apollo spacecraft on top: CSM, LM and adapter (the escape
+            // tower is counted with the S-II, which carries it until jettison).
+            payloadMass = 45730f,
             payloadMax = 140000f,     // LEO (Skylab-class launch: ~140 t)
             // Apollo 11 S-IC: centre engine cutoff T+135.2 s, outboard
             // engine cutoff T+161.6 s (~34 t residual).
@@ -504,14 +551,10 @@ public static class RocketPresets
             // CCB: 76.4 t RP-1 + 207.7 t LOX.
             fuelType = "RP-1", fuelCapacity = 94.3f, fuelDiameter = 3.81f,
             oxidizerCapacity = 182.1f, oxidizerDiameter = 3.81f,
-            // CCB 21.05 t dry + interstage 1 t + the 2.1 t fairing (T+3:30).
-            dryMass = 24180f,
+            // CCB 21.05 t dry + interstage 1 t.
+            dryMass = 22053f,
             firstStageName = "Common Core Booster",
             firstStageModelStages = new[] { "Booster" },
-            firstStageDrops = new[]
-            {
-                new StageDrop { time = 210f, modelStages = new[] { "Fairing_A", "Fairing_B" }, mass = 2127f },
-            },
             upperStages = new[]
             {
                 // Centaur III: one RL10C-1, 20.8 t of propellant, up to ~14 min.
@@ -519,8 +562,12 @@ public static class RocketPresets
                 {
                     name = "Centaur", modelStages = new[] { "Centaur" },
                     engines = Engines("RL10C1", 1), fuelType = "LH2",
-                    fuelMass = 3030f, oxidizerMass = 17800f, dryMass = 2316f, diameter = 3.05f,
+                    // 2.3 t dry + the 2.1 t fairing riding on it until jettison.
+                    fuelMass = 3030f, oxidizerMass = 17800f, dryMass = 4443f, diameter = 3.05f,
                     separationDelay = 6f, ignitionDelay = 10f,
+                    // Fairing jettisoned ~8 s after Centaur ignition (~T+4:27),
+                    // once the booster is gone - not during the booster burn.
+                    drops = new[] { new StageDrop { time = 8f, modelStages = new[] { "Fairing_A", "Fairing_B" }, mass = 2127f } },
                 },
             },
             payloadMass = 5000f,

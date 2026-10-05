@@ -19,7 +19,7 @@ public sealed class DroppedStage : MonoBehaviour
     public static readonly List<DroppedStage> All = new();
 
     /// <summary>Detaches 'parts' (keeping their world pose) into a new falling object.</summary>
-    public static DroppedStage Create(string name, IEnumerable<Transform> parts, float mass, Rigidbody from, Vector3 separationVelocity)
+    public static DroppedStage Create(string name, IEnumerable<Transform> parts, float mass, Rigidbody from, Vector3 separationVelocity, Vector3 extraSpin = default)
     {
         var holder = new GameObject(name);
         holder.transform.SetPositionAndRotation(from.worldCenterOfMass, from.rotation);
@@ -38,7 +38,7 @@ public sealed class DroppedStage : MonoBehaviour
         body.linearDamping = 0f; body.angularDamping = 0f;
         body.interpolation = RigidbodyInterpolation.Interpolate;
         body.linearVelocity = from.linearVelocity + separationVelocity * PlanetBody.WorldUnitsPerMeter;
-        body.angularVelocity = from.angularVelocity;
+        body.angularVelocity = from.angularVelocity + extraSpin;
         // No collider to derive inertia from: a long cylinder-ish estimate.
         var length = Mathf.Max(bounds.size.x, bounds.size.y, bounds.size.z);
         body.inertiaTensor = Vector3.one * Mathf.Max(1e-6f, body.mass * length * length / 12f);

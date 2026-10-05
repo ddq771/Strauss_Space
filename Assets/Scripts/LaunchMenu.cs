@@ -173,7 +173,7 @@ public sealed class LaunchMenu : MonoBehaviour
     {
         if (chosen < 0) { screen = Screen.Rockets; return; }
         var p = RocketPresets.All[chosen];
-        var pw = Mathf.Min(560, w - 60); var ph = 380f;
+        var pw = Mathf.Min(560, w - 60); var ph = 460f;
         var r = new Rect((w - pw) / 2, Mathf.Max(30, h * .5f - ph / 2), pw, ph);
         Fill(r, Panel);
         Fill(new Rect(r.x, r.y, r.width, 4), Accent);
@@ -193,6 +193,20 @@ public sealed class LaunchMenu : MonoBehaviour
         GUILayout.FlexibleSpace();
         GUILayout.Label((max / 1000).ToString("F1") + " t", small);
         GUILayout.EndHorizontal();
+        GUILayout.Space(10);
+
+        // First-stage propellant load, 0-100% in 1% steps (upper stages
+        // always go up full).
+        GUILayout.Label("Fuel: " + (flight.Fill * 100).ToString("F0") + "%   (" + (flight.LiquidPropellant / 1000).ToString("N0") + " t of propellant)", stat);
+        GUILayout.Space(6);
+        var fill = GUILayout.HorizontalSlider(flight.Fill, 0f, 1f, sliderTrack, sliderThumb, GUILayout.Height(22));
+        fill = Mathf.Round(fill * 100f) / 100f;
+        if (Mathf.Abs(fill - flight.Fill) >= .005f) flight.SetFill(fill);
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("Empty", small);
+        GUILayout.FlexibleSpace();
+        GUILayout.Label("Full", small);
+        GUILayout.EndHorizontal();
         GUILayout.Space(16);
 
         // Live figures for this load.
@@ -205,7 +219,7 @@ public sealed class LaunchMenu : MonoBehaviour
         Stat("Δv (vac)", assembly.TotalDeltaV.ToString("N0") + " m/s");
         GUILayout.EndHorizontal();
         GUILayout.Space(6);
-        GUILayout.Label(twr < 1 ? "Too heavy to lift off: lower the payload." :
+        GUILayout.Label(twr < 1 ? "Too heavy to lift off: lower the payload or the fuel." :
             "Payload rides on the last stage to the end: more payload, less Δv for every stage and a slower climb.", cardText);
         GUILayout.FlexibleSpace();
         GUILayout.BeginHorizontal();

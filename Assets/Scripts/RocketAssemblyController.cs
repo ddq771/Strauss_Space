@@ -693,6 +693,8 @@ public sealed class RocketAssemblyController : MonoBehaviour
             for(var i=0;i<drops.Length;i++)
                 if(!dropsDone.Contains(i) && flight.StageBurnTime>=drops[i].time)
                 {
+                    // No fairing fitted: nothing to jettison, and its mass was never on board.
+                    if(p.fairingOff && RocketPresets.Preset.IsFairingDrop(drops[i])){dropsDone.Add(i);continue;}
                     if(autoStaging)Drop(drops,i,now);
                     else if(!stagePromptShown){stagePromptShown=true;notice=DropName(drops[i])+" burnt out - press G to stage.";}
                 }
@@ -735,6 +737,9 @@ public sealed class RocketAssemblyController : MonoBehaviour
         var n=string.Join(" ",drop.modelStages);
         if(n.Contains("Fairing"))return "payload fairing";
         if(n.Contains("LAS"))return "launch abort system";
+        if(n.Contains("LES"))return "escape tower";
+        if(n.Contains("Shroud"))return "nose shroud";
+        if(n.Contains("Interstage"))return "interstage ring";
         return "strap-on boosters";
     }
 
@@ -939,7 +944,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         // A later stage: everything from it up.
         var spec=p.upperStages[k-1];
         double above=p.payloadMass;
-        for(var j=k-1;j<p.upperStages.Length;j++)above+=p.upperStages[j].dryMass+p.upperStages[j].fuelMass+p.upperStages[j].oxidizerMass;
+        for(var j=k-1;j<p.upperStages.Length;j++)above+=p.StageDry(j+1)+p.upperStages[j].fuelMass+p.upperStages[j].oxidizerMass;
         var end=above-spec.fuelMass-spec.oxidizerMass;
         return end>0?StageIsp(spec.engines)*G0*Math.Log(above/end):0;
     }
@@ -1079,15 +1084,15 @@ public sealed class RocketAssemblyController : MonoBehaviour
     private void Separate(RocketPresets.Preset p,RocketPresets.StageSpec next,float now)
     {
         var spentParts=stageIndex==0?p.firstStageModelStages:p.upperStages[stageIndex-1].modelStages;
-        var spentDry=stageIndex==0?p.dryMass:p.upperStages[stageIndex-1].dryMass;
+        var spentDry=p.StageDry(stageIndex);
         Detach(spentParts,spentDry+(float)flight.LiquidPropellant,(StageName(stageIndex)??"Stage")+" (spent)");
         if(flight.SolidBoosterCount>0)flight.JettisonSolids();
 
         // What's left: the next stage's propellant in the tanks, everything
         // else above it as dry mass.
-        var above=p.payloadMass+next.dryMass;
+        var above=p.payloadMass+p.StageDry(stageIndex+1);
         for(var j=stageIndex+1;j<p.upperStages.Length;j++)
-            above+=p.upperStages[j].dryMass+p.upperStages[j].fuelMass+p.upperStages[j].oxidizerMass;
+            above+=p.StageDry(j+1)+p.upperStages[j].fuelMass+p.upperStages[j].oxidizerMass;
         flight.LoadStagePropellant(next.fuelType,next.fuelMass,next.oxidizerMass);
         flight.SetStageDryMass(above);
 
@@ -1147,9 +1152,64 @@ public sealed class RocketAssemblyController : MonoBehaviour
         var parts=new List<Transform>();
         foreach(var name in modelStages){var t=root.Find("Stage_"+name);if(t!=null)parts.Add(t);}
         if(parts.Count==0)return;
-        // A small separation push: retro-rockets / springs move it away aft.
-        var push=-rocket.transform.up*2f;
-        DroppedStage.Create(label,parts,mass,rocket.GetComponent<Rigidbody>(),push);
+        var body=rocket.GetComponent<Rigidbody>();
+        var up=rocket.transform.up;
+        var joined=string.Join(" ",modelStages);
+        if(joined.Contains("Fairing") || joined.Contains("Shroud"))
+        {
+            // Payload fairing / shroud: each half is pushed sideways by the
+            // separation springs and pyros and swings open about its base
+            // hinge, then tumbles away - a clamshell opening, not a drop.
+            foreach(var part in parts)
+            {
+                var outward=PartOutward(part);
+                var spin=Vector3.Cross(up,outward)*-.35f;   // top tips outward
+                DroppedStage.Create(label,new[]{part},mass/parts.Count,body,outward*4f+up*.5f,spin);
+            }
+            return;
+        }
+        if(joined.Contains("LES") || joined.Contains("LAS"))
+        {
+            // Escape tower: its jettison motor fires it off ahead and to one side.
+            DroppedStage.Create(label,parts,mass,body,up*35f+rocket.transform.right*6f,rocket.transform.forward*.2f);
+            return;
+        }
+        // Spent stages, strap-ons, interstage rings: retro-rockets / springs move them away aft.
+        DroppedStage.Create(label,parts,mass,body,-up*2f);
+    }
+
+    // Hides the body model's fairing / nose shroud parts when the active
+    // preset flies without one (its mass and drag are already handled by
+    // StageDry and the drag coefficient); shows them otherwise.
+    private void ApplyFairingVisibility()
+    {
+        if(activePresetIndex<0)return;
+        var p=RocketPresets.All[activePresetIndex];
+        var root=rocket.transform.Find("Imported Body/"+activeBodyModelKey);
+        if(root==null)return;
+        var stages=new List<RocketPresets.StageDrop[]>{p.firstStageDrops};
+        if(p.upperStages!=null)foreach(var s in p.upperStages)stages.Add(s.drops);
+        foreach(var drops in stages)
+        {
+            if(drops==null)continue;
+            foreach(var d in drops)
+            {
+                if(!RocketPresets.Preset.IsFairingDrop(d))continue;
+                foreach(var name in d.modelStages){var t=root.Find("Stage_"+name);if(t!=null)t.gameObject.SetActive(!p.fairingOff);}
+            }
+        }
+    }
+
+    // Direction from the vehicle's axis out to a detached part (world), for
+    // pushing fairing halves apart; a single-piece shroud goes to one side.
+    private Vector3 PartOutward(Transform part)
+    {
+        var renderers=part.GetComponentsInChildren<Renderer>();
+        if(renderers.Length==0)return rocket.transform.right;
+        var bounds=renderers[0].bounds;
+        foreach(var r in renderers)bounds.Encapsulate(r.bounds);
+        var local=rocket.transform.InverseTransformPoint(bounds.center);local.y=0;
+        return local.sqrMagnitude>1e-10f?rocket.transform.TransformDirection(local.normalized):rocket.transform.right;
     }
 
     // Flight control. With SAS (the flight computer, T toggles) W/S and A/D
@@ -1662,7 +1722,8 @@ public sealed class RocketAssemblyController : MonoBehaviour
         // schematic tank recolor is only useful for the generated hull.
         if(string.IsNullOrEmpty(preset.bodyModelKey))SetTankColors(preset.hullColor,preset.hullColor);
         else SetTankColors(DefaultFuelColor,DefaultOxidizerColor);
-        flight.SetDragCoefficient(preset.dragCoefficient);
+        flight.SetDragCoefficient(preset.dragCoefficient*(preset.fairingOff?1.2f:1f));
+        ApplyFairingVisibility();
         activePresetName=preset.name;
         locked=true;
         selectedSocket=0;
