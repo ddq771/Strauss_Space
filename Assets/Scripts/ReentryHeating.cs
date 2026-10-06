@@ -15,10 +15,16 @@ using UnityEngine;
 /// leeward side almost none), and cools by radiating, εσT⁴, with the
 /// thermal mass of the skin behind it:
 ///     C·dT/dt = q·f(θ) − εσ(T⁴ − T_air⁴).
-/// Patches inside the stage's heat shield (tiles, base shield) survive up
-/// to its limit; bare structure breaks up above ~1,100 °C. Fly a shielded
-/// vehicle with the shield into the flow and it survives; turn bare metal
-/// into the flow and it burns up.
+/// Each patch belongs to one of the stage's heat zones (RocketPresets.
+/// HeatZone: tiles, RCC, a base shield) or to its bare structure, with
+/// that material's limit, emissivity and heat capacity, and its own local
+/// radius in the Sutton-Graves term (a nose cap heats more than a broad
+/// belly). Fly the vehicle at the attitude it was built for and every zone
+/// stays under its rating; turn a weaker area into the flow and it
+/// overheats and the vehicle burns up.
+///
+/// ShowZones draws the zones over the hull (H): each its own colour, bare
+/// structure striped, shading to yellow and red as a patch nears its limit.
 ///
 /// The glow - a white-hot cap on the leading side, a long orange/pink
 /// plasma wake and an orange light - scales with the heat flux.
@@ -27,11 +33,14 @@ public sealed class ReentryHeating : MonoBehaviour
 {
     private const double SuttonGraves = 1.7415e-4;
     private const double Sigma = 5.670374e-8, Emissivity = .85;
-    private const double HeatCapacity = 25000;     // J/(m²·K): skin plus structure behind it
-    private const float VisibleFlux = 3e4f, FullFlux = 1.5e6f;   // W/m²: glow starts / full
+    // W/m²: glow starts / full. Ascent (≤ ~100 kW/m² near a booster's
+    // cutoff) stays dark; orbital entries (~1 MW/m²) blaze.
+    private const float VisibleFlux = 1.2e5f, FullFlux = 2e6f;
+    public const int MaxZones = 8;
 
-    // Patch normals (rocket-local, +Y = nose): a Fibonacci sphere.
-    private static readonly Vector3[] Normals = BuildNormals(48);
+    // Patch normals (rocket-local, +Y = nose): a Fibonacci sphere, fine
+    // enough to resolve a 30° nose cap.
+    private static readonly Vector3[] Normals = BuildNormals(96);
 
     // Set by the owner.
     public Func<Vector3> AirVelocity;           // m/s, world axes
@@ -43,14 +52,18 @@ public sealed class ReentryHeating : MonoBehaviour
     public Action<string> BurnedUp;
 
     private readonly double[] temperature = new double[Normals.Length];
+    private readonly int[] patchZone = new int[Normals.Length];         // index into Zone*; last = bare
+    private readonly float[] patchHeat = new float[Normals.Length];     // fraction of its zone's limit
     public double HeatFlux { get; private set; }            // W/m², stagnation point
-    public double HottestShieldC { get; private set; } = 15;
-    public double HottestBareC { get; private set; } = 15;
-    public double ShieldLimitC { get; private set; }
-    public double BareLimitC { get; private set; } = RocketPresets.HeatProtection.DefaultBareLimitC;
+    // Per zone, then the bare structure last: name, hottest patch, rating.
+    public string[] ZoneNames { get; private set; } = { "bare aluminium" };
+    public double[] ZoneHottestC { get; private set; } = { 15 };
+    public double[] ZoneLimitC { get; private set; } = { 500 };
     public bool HasShield { get; private set; }
-    /// <summary>How squarely the heat shield faces the flow: 1 head-on, 0 edge-on or away.</summary>
-    public float ShieldFacing { get; private set; }
+    /// <summary>How closely the vehicle holds the attitude it was built to enter at: 1 exactly, 0 at 90° or more off.</summary>
+    public float AttitudeMatch { get; private set; }
+    /// <summary>Draw the heat zones and their temperatures over the hull.</summary>
+    public bool ShowZones;
     public float Glow { get; private set; }
     public bool Burned { get; private set; }
 
@@ -109,7 +122,9 @@ public sealed class ReentryHeating : MonoBehaviour
     public void ResetHeat()
     {
         for (var i = 0; i < temperature.Length; i++) temperature[i] = 288.15;
-        HeatFlux = 0; Glow = 0; Burned = false; HottestShieldC = HottestBareC = 15;
+        HeatFlux = 0; Glow = 0; Burned = false;
+        for (var i = 0; i < ZoneHottestC.Length; i++) ZoneHottestC[i] = 15;
+        Array.Clear(patchHeat, 0, patchHeat.Length);
         UpdateVisuals(Vector3.zero);
     }
 
@@ -129,38 +144,61 @@ public sealed class ReentryHeating : MonoBehaviour
         HeatFlux = speed > 1 ? SuttonGraves * Math.Sqrt(density / noseRadius) * speed * speed * speed : 0;
 
         var protection = Protection != null ? Protection() : default;
-        HasShield = protection.HasShield;
-        ShieldLimitC = protection.shieldLimitC; BareLimitC = protection.BareLimit;
-        var axis = protection.shieldAxis.sqrMagnitude > 0 ? protection.shieldAxis.normalized : Vector3.zero;
-        var cosShield = Mathf.Cos(protection.shieldHalfAngle * Mathf.Deg2Rad);
+        var zones = protection.zones ?? Array.Empty<RocketPresets.HeatZone>();
+        var zoneCount = Mathf.Min(zones.Length, MaxZones);
+        var bare = protection.Bare;
+        HasShield = zoneCount > 0;
+        if (ZoneNames.Length != zoneCount + 1 || (zoneCount > 0 && ZoneNames[0] != zones[0].name) || ZoneNames[zoneCount] != bare.name)
+        {
+            ZoneNames = new string[zoneCount + 1]; ZoneHottestC = new double[zoneCount + 1]; ZoneLimitC = new double[zoneCount + 1];
+            for (var z = 0; z <= zoneCount; z++) { ZoneNames[z] = z < zoneCount ? zones[z].name : bare.name; ZoneHottestC[z] = 15; }
+        }
+        // Which zone each patch is in, for the stage flying now.
+        var zoneAxes = new Vector3[zoneCount]; var zoneCos = new float[zoneCount];
+        for (var z = 0; z < zoneCount; z++) { zoneAxes[z] = protection.ToLocal(zones[z].direction); zoneCos[z] = Mathf.Cos(zones[z].halfAngle * Mathf.Deg2Rad); }
+        for (var i = 0; i < Normals.Length; i++)
+        {
+            var zone = zoneCount;
+            for (var z = 0; z < zoneCount; z++) if (Vector3.Dot(Normals[i], zoneAxes[z]) >= zoneCos[z]) { zone = z; break; }
+            patchZone[i] = zone;
+        }
+        for (var z = 0; z <= zoneCount; z++) ZoneLimitC[z] = z < zoneCount ? zones[z].limitC : bare.limitC;
         // The side meeting the air: the direction of motion through it, in
         // the vehicle's frame (patches facing it take the heat).
         var oncoming = speed > 1 ? transform.InverseTransformDirection(velocity / (float)speed) : Vector3.up;
-        ShieldFacing = HasShield && axis != Vector3.zero ? Mathf.Clamp01(Vector3.Dot(axis, oncoming)) : 0;
+        AttitudeMatch = Mathf.Clamp01(Vector3.Dot(protection.ToLocal(protection.EntryDirection), oncoming));
 
         // Integrate each patch; sub-step so warp or a big flux can't overshoot.
         var steps = Math.Max(1, (int)Math.Ceiling(dt / .25));
         var h = dt / steps;
-        double shieldMax = airK, bareMax = airK;
+        var hottest = new double[zoneCount + 1];
+        for (var z = 0; z <= zoneCount; z++) hottest[z] = airK;
         string failure = null;
         for (var i = 0; i < Normals.Length; i++)
         {
             var c = Vector3.Dot(Normals[i], oncoming);
             var exposure = c > 0 ? Math.Pow(c, 1.5) : 0;
+            var zone = patchZone[i];
+            var material = zone < zoneCount ? zones[zone] : bare;
+            var radius = material.localRadius > 0 ? material.localRadius : noseRadius;
+            var flux = HeatFlux * Math.Sqrt(noseRadius / radius) * exposure;
+            var emissivity = material.emissivity > 0 ? material.emissivity : Emissivity;
+            var capacity = material.heatCapacity > 0 ? material.heatCapacity : 9000;
             var t = temperature[i];
             for (var s = 0; s < steps; s++)
             {
-                var net = HeatFlux * exposure - Emissivity * Sigma * (t * t * t * t - airK * airK * airK * airK);
-                t = Math.Max(airK * .5, t + net / HeatCapacity * h);
+                var net = flux - emissivity * Sigma * (t * t * t * t - airK * airK * airK * airK);
+                t = Math.Max(airK * .5, t + net / capacity * h);
             }
             temperature[i] = t;
-            var shielded = HasShield && axis != Vector3.zero && Vector3.Dot(Normals[i], axis) >= cosShield;
+            hottest[zone] = Math.Max(hottest[zone], t);
             var celsius = t - 273.15;
-            if (shielded) shieldMax = Math.Max(shieldMax, t); else bareMax = Math.Max(bareMax, t);
-            if (failure == null && celsius > (shielded ? protection.shieldLimitC : protection.BareLimit))
-                failure = shielded ? "heat shield failed" : "bare structure exposed to the plasma";
+            patchHeat[i] = (float)(celsius / material.limitC);
+            if (failure == null && celsius > material.limitC)
+                failure = material.name + " overheated (" + celsius.ToString("N0") + " °C, rated " + material.limitC.ToString("N0") + " °C)";
         }
-        HottestShieldC = shieldMax - 273.15; HottestBareC = bareMax - 273.15;
+        for (var z = 0; z <= zoneCount; z++) ZoneHottestC[z] = hottest[z] - 273.15;
+        lastProtection = protection;
         Glow = Mathf.Clamp01(Mathf.Log10(Mathf.Max(1f, (float)HeatFlux) / VisibleFlux) / Mathf.Log10(FullFlux / VisibleFlux));
         if (failure != null && Active != null && Active())
         {
@@ -172,6 +210,82 @@ public sealed class ReentryHeating : MonoBehaviour
     private void LateUpdate()
     {
         UpdateVisuals(AirVelocity != null && !Burned ? AirVelocity() : Vector3.zero);
+        UpdateHeatMap();
+    }
+
+    // --- Heat-zone map (H) ------------------------------------------------
+    // A tinted copy of every hull mesh: each zone its own colour with a
+    // bright line at its edge, bare structure striped, and every patch
+    // shading to yellow then red as it nears its rating.
+    private RocketPresets.HeatProtection lastProtection;
+    private Material heatMapMaterial;
+    private readonly System.Collections.Generic.List<GameObject> heatMaps = new System.Collections.Generic.List<GameObject>();
+    private int heatMapSourceCount = -1;
+    private readonly Vector4[] patchDirs = new Vector4[Normals.Length];
+    private readonly Vector4[] zoneAxisArray = new Vector4[MaxZones];
+    private readonly Vector4[] zoneColorArray = new Vector4[MaxZones + 1];
+    /// <summary>The colour each zone is drawn in (bare structure last), for the legend.</summary>
+    public static Color ZoneColor(int zone, int zoneCount)
+    {
+        if (zone >= zoneCount) return new Color(.95f, .6f, .2f);   // bare: amber stripes
+        var palette = new[] { new Color(.3f, .55f, 1f), new Color(.2f, .85f, .9f), new Color(.65f, .45f, 1f), new Color(.3f, .9f, .55f), new Color(.95f, .45f, .85f), new Color(.6f, .75f, 1f), new Color(.9f, .9f, .4f), new Color(.5f, .9f, .9f) };
+        return palette[zone % palette.Length];
+    }
+
+    private void UpdateHeatMap()
+    {
+        var show = ShowZones && Protection != null;
+        if (!show)
+        {
+            foreach (var g in heatMaps) if (g != null && g.activeSelf) g.SetActive(false);
+            return;
+        }
+        if (heatMapMaterial == null)
+        {
+            var shader = Shader.Find("Strauss Space/Heat Zones");
+            if (shader == null) return;
+            heatMapMaterial = new Material(shader) { name = "Heat zones" };
+        }
+        // Zones for the stage flying now even before any heating.
+        var protection = Protection();
+        var zones = protection.zones ?? Array.Empty<RocketPresets.HeatZone>();
+        var zoneCount = Mathf.Min(zones.Length, MaxZones);
+        if (lastProtection.zones != protection.zones) ResetPatchesFor(protection, zoneCount);
+        for (var z = 0; z < MaxZones; z++)
+        {
+            if (z < zoneCount)
+            {
+                var axis = transform.TransformDirection(protection.ToLocal(zones[z].direction));
+                zoneAxisArray[z] = new Vector4(axis.x, axis.y, axis.z, Mathf.Cos(zones[z].halfAngle * Mathf.Deg2Rad));
+            }
+            else zoneAxisArray[z] = Vector4.zero;
+        }
+        for (var z = 0; z <= MaxZones; z++) zoneColorArray[z] = ZoneColor(z < zoneCount ? z : zoneCount, zoneCount);
+        for (var i = 0; i < Normals.Length; i++)
+        {
+            var d = transform.TransformDirection(Normals[i]);
+            patchDirs[i] = new Vector4(d.x, d.y, d.z, patchHeat[i]);
+        }
+        heatMapMaterial.SetVectorArray("_PatchDir", patchDirs);
+        heatMapMaterial.SetVectorArray("_ZoneAxis", zoneAxisArray);
+        heatMapMaterial.SetVectorArray("_ZoneColor", zoneColorArray);
+        heatMapMaterial.SetFloat("_ZoneCount", zoneCount);
+        RefreshCopies(heatMaps, ref heatMapSourceCount, heatMapMaterial, "Heat zones");
+        foreach (var g in heatMaps) if (g != null && !g.activeSelf) g.SetActive(true);
+    }
+
+    // On the pad or after staging: which zone each patch is in, so the map
+    // shows the right areas before the first heating step.
+    private void ResetPatchesFor(RocketPresets.HeatProtection protection, int zoneCount)
+    {
+        lastProtection = protection;
+        for (var i = 0; i < Normals.Length; i++)
+        {
+            var zone = zoneCount;
+            for (var z = 0; z < zoneCount; z++)
+                if (Vector3.Dot(Normals[i], protection.ToLocal(protection.zones[z].direction)) >= Mathf.Cos(protection.zones[z].halfAngle * Mathf.Deg2Rad)) { zone = z; break; }
+            patchZone[i] = zone;
+        }
     }
 
     // --- Visuals ----------------------------------------------------------
@@ -301,29 +415,39 @@ public sealed class ReentryHeating : MonoBehaviour
 
     // One glowing copy per hull mesh still attached (staging changes the
     // set: rebuilt when the number of meshes changes).
-    private void RefreshSheaths()
+    private void RefreshSheaths() => RefreshCopies(sheaths, ref sheathSourceCount, sheathMaterial, "Re-entry sheath");
+
+    private void RefreshCopies(System.Collections.Generic.List<GameObject> copies, ref int sourceCount, Material material, string label)
     {
-        var filters = GetComponentsInChildren<MeshFilter>();
+        var filters = GetComponentsInChildren<MeshFilter>(true);
         var count = 0;
-        foreach (var f in filters) if (f.GetComponent<ReentrySheath>() == null && f.GetComponent<MeshRenderer>() != null && f.GetComponent<MeshRenderer>().enabled) count++;
-        if (count == sheathSourceCount && sheaths.TrueForAll(g => g != null)) return;
-        foreach (var g in sheaths) if (g != null) Destroy(g);
-        sheaths.Clear();
+        foreach (var f in filters) if (IsHull(f)) count++;
+        if (count == sourceCount && copies.TrueForAll(g => g != null)) return;
+        foreach (var g in copies) if (g != null) Destroy(g);
+        copies.Clear();
         foreach (var f in filters)
         {
-            var source = f.GetComponent<MeshRenderer>();
-            if (f.GetComponent<ReentrySheath>() != null || source == null || !source.enabled || f.sharedMesh == null) continue;
-            var g = new GameObject("Re-entry sheath");
+            if (!IsHull(f)) continue;
+            var g = new GameObject(label);
             g.AddComponent<ReentrySheath>();
             g.transform.SetParent(f.transform, false);
             g.AddComponent<MeshFilter>().sharedMesh = f.sharedMesh;
             var r = g.AddComponent<MeshRenderer>();
-            r.sharedMaterial = sheathMaterial;
+            r.sharedMaterial = material;
             r.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             r.receiveShadows = false;
-            sheaths.Add(g);
+            copies.Add(g);
         }
-        sheathSourceCount = count;
+        sourceCount = count;
+    }
+
+    // A visible hull mesh: not one of these overlays, and not an engine flame.
+    private static bool IsHull(MeshFilter f)
+    {
+        if (f.GetComponent<ReentrySheath>() != null || f.sharedMesh == null || !f.gameObject.activeInHierarchy) return false;
+        var r = f.GetComponent<MeshRenderer>();
+        if (r == null || !r.enabled) return false;
+        return !(r.sharedMaterial != null && r.sharedMaterial.shader != null && r.sharedMaterial.shader.name.StartsWith("Strauss Space/Engine Plume"));
     }
 
     private void SetSheaths(bool on) { foreach (var g in sheaths) if (g != null && g.activeSelf != on) g.SetActive(on); }
@@ -331,6 +455,7 @@ public sealed class ReentryHeating : MonoBehaviour
     private void OnDestroy()
     {
         if (sheathMaterial != null) Destroy(sheathMaterial);
+        if (heatMapMaterial != null) Destroy(heatMapMaterial);
     }
 }
 

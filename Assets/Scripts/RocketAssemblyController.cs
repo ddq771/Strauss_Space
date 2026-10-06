@@ -240,11 +240,13 @@ public sealed class RocketAssemblyController : MonoBehaviour
                 "enable \"Allow gimballed mounting\" on the frame to steer.",
                 new GUIStyle(GUI.skin.label){wordWrap=true});
         }
-        GUILayout.Label("Shift/Ctrl: throttle up/down. Z: full throttle. X: cut throttle. Space: toggle ignition. G: stage. W/S/A/D: pitch/yaw. T: SAS. R: re-entry attitude (shield into the airflow).",new GUIStyle(GUI.skin.label){wordWrap=true});
+        GUILayout.Label("Shift/Ctrl: throttle up/down. Z: full throttle. X: cut throttle. Space: toggle ignition. G: stage. W/S/A/D: pitch/yaw. T: SAS. R: re-entry attitude (the attitude the heat shield was built for). H: heat-zone map.",new GUIStyle(GUI.skin.label){wordWrap=true});
         GUILayout.Label(new GUIContent(sasEnabled?"SAS: on - keys set turn rate, release to hold attitude":"SAS: off - keys deflect the engines directly",
             "The flight computer steers by gimballing the engines (each within its real range and speed). No control with the engines off."));
-        var reentryOn=GUILayout.Toggle(reentryAttitude,new GUIContent(" Re-entry attitude (R)","Engines off: RCS turns the heat shield into the oncoming air and holds it there."));
+        var reentryOn=GUILayout.Toggle(reentryAttitude,new GUIContent(" Re-entry attitude (R)","Engines off: RCS turns the vehicle to the attitude its heat shield was built for - the orbiter at 40° angle of attack, the Ship belly-first at 65°, a booster engines-first - and holds it there."));
         if(reentryOn!=reentryAttitude)SetReentryAttitude(reentryOn);
+        var heatingView=GetComponent<ReentryHeating>();
+        if(heatingView!=null)heatingView.ShowZones=GUILayout.Toggle(heatingView.ShowZones,new GUIContent(" Heat-zone map (H)","Draws each heat-protected area on the vehicle in its own colour (bare structure striped), shading yellow then red as it nears its rating."));
         GUILayout.Label("Throttle: "+(commandedThrottle*100).ToString("F0")+"%");
         var previousThrottle=commandedThrottle;
         commandedThrottle=GUILayout.HorizontalSlider(commandedThrottle,0f,1);
@@ -1012,7 +1014,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
             var p=RocketPresets.All[activePresetIndex];
             var k=separated?stageIndex+1:stageIndex;
             var heat=k==0?p.firstStageHeat:k-1<p.upperStages.Length?p.upperStages[k-1].heat:default;
-            if(heat.HasShield && heat.shieldAxis==Vector3.zero)heat.shieldAxis=TileAxis();
+            heat.windwardLocal=TileAxis();
             return heat;
         }
     }
@@ -1039,7 +1041,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
     public void SetReentryAttitude(bool on)
     {
         reentryAttitude=on;holdingAttitude=false;
-        notice=on?"Re-entry attitude: turning the "+(CurrentHeatProtection.HasShield?"heat shield":"nose")+" into the oncoming air (RCS, engines off).":"Re-entry attitude off - holding attitude.";
+        notice=on?"Re-entry attitude: turning to "+(CurrentHeatProtection.HasShield?"the attitude the heat shield was built for":"nose-first")+" (RCS, engines off).":"Re-entry attitude off - holding attitude.";
     }
 
     public void ReportBurnUp(string reason)
@@ -1051,19 +1053,29 @@ public sealed class RocketAssemblyController : MonoBehaviour
     private void ReentryGUI()
     {
         var heating=GetComponent<ReentryHeating>();
-        if(heating==null || heating.HeatFlux<5000)return;
-        var style=new GUIStyle(GUI.skin.label){wordWrap=true};
-        var worst=heating.HasShield
-            ? Mathf.Max((float)(heating.HottestShieldC/heating.ShieldLimitC),(float)(heating.HottestBareC/heating.BareLimitC))
-            : (float)(heating.HottestBareC/heating.BareLimitC);
-        style.normal.textColor=worst>.85f?new Color(1f,.35f,.3f):worst>.6f?new Color(1f,.75f,.3f):Color.white;
-        var text="Re-entry heating: "+(heating.HeatFlux/1000).ToString("N0")+" kW/m²\n";
-        if(heating.HasShield)
-            text+="Heat shield "+heating.HottestShieldC.ToString("N0")+" / "+heating.ShieldLimitC.ToString("N0")+" °C · ";
-        text+="bare structure "+heating.HottestBareC.ToString("N0")+" / "+heating.BareLimitC.ToString("N0")+" °C";
-        if(heating.HasShield)
-            text+=heating.ShieldFacing>.7f?"\nHeat shield facing the flow":heating.ShieldFacing>.3f?"\nHeat shield partly turned away":"\nBARE SIDE INTO THE FLOW - turn the shield forward";
-        GUILayout.Label(new GUIContent(text,"Stagnation-point heat flux (Sutton-Graves) and the hottest patch of shielded and bare surface. Over the limit, the vehicle burns up."),style);
+        if(heating==null)return;
+        var heated=heating.HeatFlux>=5000;
+        if(!heated && !heating.ShowZones)return;
+        var style=new GUIStyle(GUI.skin.label){wordWrap=true,richText=true};
+        var text="";
+        if(heated)
+        {
+            text="Re-entry heating: "+(heating.HeatFlux/1000).ToString("N0")+" kW/m²";
+            var off=Mathf.Acos(Mathf.Clamp01(heating.AttitudeMatch))*Mathf.Rad2Deg;
+            text+=off<10?" · on the entry attitude":" · "+off.ToString("F0")+"° off the entry attitude"+(reentryAttitude?"":" (R)");
+        }
+        else text="Heat zones (H to hide)";
+        // One line per zone, its swatch matching the map (H), coloured as it nears its rating.
+        var count=heating.ZoneNames.Length-1;
+        for(var z=0;z<=count;z++)
+        {
+            var share=heating.ZoneLimitC[z]>0?heating.ZoneHottestC[z]/heating.ZoneLimitC[z]:0;
+            var tone=share>.85?"#ff5a4d":share>.6?"#ffc04d":"#ffffff";
+            text+="\n<color=#"+ColorUtility.ToHtmlStringRGB(ReentryHeating.ZoneColor(z,count))+">"+(z<count?"■":"▨")+"</color> <color="+tone+">"+heating.ZoneNames[z]+": "+
+                heating.ZoneHottestC[z].ToString("N0")+" / "+heating.ZoneLimitC[z].ToString("N0")+" °C</color>";
+        }
+        if(heated && !heating.ShowZones)text+="\nH: show the heat zones on the vehicle";
+        GUILayout.Label(new GUIContent(text,"Stagnation-point heat flux (Sutton-Graves), and the hottest point of each protected area and of the bare structure against what it's rated for. Over a rating, the vehicle burns up."),style);
     }
 
     private static string EngineSummary(string[] engines)
@@ -1253,7 +1265,11 @@ public sealed class RocketAssemblyController : MonoBehaviour
 
     private void FixedUpdate()
     {
-        if(rocket!=null && catalog!=null && rocket.Launched)UpdateFlightGimbals();
+        if(rocket==null || catalog==null)return;
+        // A lifting body (the orbiter) gets its hypersonic lift and wing drag.
+        var heat=CurrentHeatProtection;
+        flight.SetEntryAerodynamics(heat.ToLocal(RocketPresets.HeatZone.Windward),heat.liftToDrag,heat.planformArea);
+        if(rocket.Launched)UpdateFlightGimbals();
     }
 
     private float rollCommand;            // degrees of differential gimbal
@@ -1360,15 +1376,24 @@ public sealed class RocketAssemblyController : MonoBehaviour
         {
             if(reentryAttitude)
             {
-                // The side to put into the flow, and where the air comes from.
+                // The attitude the stage was built to enter at: that side
+                // toward the direction of motion (it meets the air first) -
+                // the orbiter's 40° angle of attack, the Ship's 65°, a
+                // booster engines-first.
                 var heat=CurrentHeatProtection;
-                var side=heat.HasShield && heat.shieldAxis!=Vector3.zero?heat.shieldAxis.normalized:Vector3.up;
+                var entry=heat.ToLocal(heat.EntryDirection);
                 var velocity=flight.GroundVelocity;
                 if(velocity.sqrMagnitude>1)
                 {
-                    // Shield toward the direction of motion: it meets the air first.
-                    var oncoming=velocity.normalized;
-                    holdAttitude=Quaternion.FromToRotation(transform.TransformDirection(side),oncoming)*transform.rotation;
+                    var motion=velocity.normalized;
+                    // Rolled windward side down, so the belly meets the air
+                    // below it and a lifting body's lift points up.
+                    var windward=heat.ToLocal(RocketPresets.HeatZone.Windward);
+                    var lee=-(windward-Vector3.Dot(windward,entry)*entry);
+                    var up=flight.RadialUp;var upAcross=up-Vector3.Dot(up,motion)*motion;
+                    holdAttitude=lee.sqrMagnitude>1e-4f && upAcross.sqrMagnitude>1e-4f
+                        ? Quaternion.LookRotation(motion,upAcross)*Quaternion.Inverse(Quaternion.LookRotation(entry,lee))
+                        : Quaternion.FromToRotation(transform.TransformDirection(entry),motion)*transform.rotation;
                     holdingAttitude=true;
                 }
             }
@@ -1466,6 +1491,11 @@ public sealed class RocketAssemblyController : MonoBehaviour
     private void Update()
     {
         if(rocket==null || catalog==null)return;
+        if(Application.isFocused && GUIUtility.keyboardControl==0 && Input.GetKeyDown(KeyCode.H) && !LaunchMenu.Open)
+        {
+            var heating=GetComponent<ReentryHeating>();
+            if(heating!=null)heating.ShowZones=!heating.ShowZones;
+        }
         if(rocket.Launched)
         {
             HandleStageKey();

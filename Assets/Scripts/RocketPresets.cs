@@ -35,23 +35,74 @@ public static class RocketPresets
     /// seconds after this stage's own ignition.
     /// </summary>
     /// <summary>
-    /// Thermal protection of a stage for re-entry heating (ReentryHeating).
-    /// Bare structure fails above bareLimitC; if the stage has a heat
-    /// shield (shieldLimitC > 0), the part of the surface within
-    /// shieldHalfAngle of shieldAxis (rocket-local) survives up to
-    /// shieldLimitC. shieldAxis zero = find it from the body model's tile
-    /// meshes (the Ship's tiles, the orbiter's black belly).
+    /// One area of a stage's surface and what it's made of, for re-entry
+    /// heating (ReentryHeating). Directions are in the vehicle frame: +Y the
+    /// nose, +Z the windward side the tiles are on (found from the body
+    /// model's tile meshes; the -Z side of an untiled body), +X across.
+    /// </summary>
+    [System.Serializable]
+    public struct HeatZone
+    {
+        public string name;
+        public Vector3 direction;       // the way the area faces (vehicle frame)
+        public float halfAngle;         // degrees: surface facing within this of direction
+        public float limitC;            // hottest it survives (°C)
+        public float emissivity;        // how well it radiates heat away
+        public float heatCapacity;      // J/(m²·K) of the hot surface layer: how fast it heats
+        // Local radius of curvature (m) for the heating: tight curves (a
+        // nose cap, a leading edge) heat far more than broad flat ones (a
+        // belly). 0 = the body radius.
+        public float localRadius;
+
+        // Bare structure. Aluminium-lithium tank walls lose their strength
+        // by ~500 °C (and are painted, radiating well); 300-series
+        // stainless holds to ~820-870 °C but radiates poorly when bare.
+        public static HeatZone Aluminium => new HeatZone { name = "bare aluminium", limitC = 500f, emissivity = .85f, heatCapacity = 9000f };
+        public static HeatZone Steel => new HeatZone { name = "bare stainless steel", limitC = 870f, emissivity = .55f, heatCapacity = 16000f };
+        public static Vector3 Nose => Vector3.up;
+        public static Vector3 Base => Vector3.down;
+        public static Vector3 Windward => Vector3.forward;
+        /// <summary>Which way the vehicle meets the air flying nose-forward at this angle of attack, windward side down.</summary>
+        public static Vector3 AtAngleOfAttack(float degrees) => new Vector3(0, Mathf.Cos(degrees * Mathf.Deg2Rad), Mathf.Sin(degrees * Mathf.Deg2Rad));
+    }
+
+    /// <summary>
+    /// A stage's thermal protection: the protected zones (a surface patch
+    /// belongs to the first one it falls in), the bare structure that
+    /// covers the rest, and the attitude it was built to enter at. Real
+    /// ratings: on its design entry each zone peaks below its limit; turn
+    /// a weaker area into the flow and it overheats.
     /// </summary>
     [System.Serializable]
     public struct HeatProtection
     {
-        public Vector3 shieldAxis;
-        public float shieldHalfAngle, shieldLimitC, bareLimitC;
-        public const float DefaultBareLimitC = 1100f;   // stage structure breaks up / melts
-        public float BareLimit => bareLimitC > 0 ? bareLimitC : DefaultBareLimitC;
-        public bool HasShield => shieldLimitC > 0;
-        public static HeatProtection Tiles(float limitC, float halfAngle) => new HeatProtection { shieldLimitC = limitC, shieldHalfAngle = halfAngle };
-        public static HeatProtection Base(float limitC) => new HeatProtection { shieldAxis = Vector3.down, shieldLimitC = limitC, shieldHalfAngle = 50 };
+        public HeatZone[] zones;
+        public HeatZone bare;                    // default: bare aluminium
+        // The side to put into the airflow (vehicle frame) - the re-entry
+        // attitude. Zero = nose-first (no protection to show the flow).
+        public Vector3 entryDirection;
+        public float liftToDrag;                 // hypersonic L/D at that attitude (0 = ballistic)
+        public float planformArea;               // m² meeting the air side-on (0 = length × diameter)
+        // Set at runtime: the windward (+Z) side in the rocket's own axes.
+        [System.NonSerialized] public Vector3 windwardLocal;
+
+        public HeatZone Bare => bare.limitC > 0 ? bare : HeatZone.Aluminium;
+        public bool HasShield => zones != null && zones.Length > 0;
+        public Vector3 EntryDirection => entryDirection.sqrMagnitude > 0 ? entryDirection.normalized : HeatZone.Nose;
+        /// <summary>Vehicle frame (+Y nose, +Z windward) to the rocket's own axes.</summary>
+        public Vector3 ToLocal(Vector3 v)
+        {
+            var w = windwardLocal.sqrMagnitude > 0 ? windwardLocal.normalized : Vector3.back;
+            return (Vector3.up * v.y + w * v.z + Vector3.Cross(Vector3.up, w) * v.x).normalized;
+        }
+
+        /// <summary>A booster that comes back engines-first behind a base heat shield.</summary>
+        public static HeatProtection BaseShield(float limitC, HeatZone bare) => new HeatProtection
+        {
+            zones = new[] { new HeatZone { name = "base heat shield", direction = HeatZone.Base, halfAngle = 50, limitC = limitC, emissivity = .85f, heatCapacity = 12000f } },
+            bare = bare,
+            entryDirection = HeatZone.Base,
+        };
     }
 
     public struct StageSpec
@@ -217,7 +268,7 @@ public static class RocketPresets
             centerOfPressure = .72f, normalForceSlope = 2.2f,
             // Booster comes back engines-first behind its base heat shield,
             // turned by its cold-gas thrusters and grid fins.
-            firstStageHeat = HeatProtection.Base(1300f), firstStageRcs = 1.5f, firstStageAeroControl = 1.5f,
+            firstStageHeat = HeatProtection.BaseShield(1300f, HeatZone.Aluminium), firstStageRcs = 1.5f, firstStageAeroControl = 1.5f,
             description = "SpaceX's workhorse since 2010: nine Merlins on a reusable booster, one Merlin Vacuum above.",
             name = "Falcon 9", bodyModelKey = "Falcon9", engineId = "Merlin1D", engineCount = 9,
             // 70 m overall, the real Block 5 height (was 87 m before the
@@ -263,7 +314,7 @@ public static class RocketPresets
             // propellant (hot staging).
             // Aero: flaps fore and aft on the Ship, finless booster - mildly unstable.
             centerOfPressure = .62f, normalForceSlope = 2.6f,
-            firstStageHeat = HeatProtection.Base(1300f), firstStageRcs = 1f, firstStageAeroControl = 1f,
+            firstStageHeat = HeatProtection.BaseShield(1300f, HeatZone.Steel), firstStageRcs = 1f, firstStageAeroControl = 1f,
             description = "The largest rocket ever flown: 33 Raptors on Super Heavy, hot-staged under the Ship.",
             name = "Starship", bodyModelKey = "Starship", engineId = "Raptor2", engineCount = 33,
             // 121.3 m overall, the full Super Heavy + Ship stack (Flight 5).
@@ -285,8 +336,22 @@ public static class RocketPresets
                 new StageSpec
                 {
                     name = "Ship", modelStages = new[] { "Ship" },
-                    // Hexagonal tiles on the windward half; enters belly-first.
-                    heat = HeatProtection.Tiles(1600f, 80f), rcsDegPerSec2 = 2f, aeroControlPerKPa = 2f,   // RCS + four flaps
+                    // Hexagonal silica tiles (rated ~1,400 °C) on the windward
+                    // half and round the nose; the leeward side is bare
+                    // stainless. Enters belly-first at ~65° angle of attack.
+                    // The belly meets the air as a 9 m cylinder side-on,
+                    // which heats ~1/√2 as much as a sphere (9 m radius).
+                    heat = new HeatProtection
+                    {
+                        zones = new[]
+                        {
+                            new HeatZone { name = "belly tiles", direction = HeatZone.Windward, halfAngle = 80, limitC = 1400f, emissivity = .9f, heatCapacity = 4000f, localRadius = 9f },
+                            new HeatZone { name = "nose tiles", direction = HeatZone.Nose, halfAngle = 40, limitC = 1400f, emissivity = .9f, heatCapacity = 4000f },
+                        },
+                        bare = HeatZone.Steel,
+                        entryDirection = HeatZone.AtAngleOfAttack(65),
+                    },
+                    rcsDegPerSec2 = 2f, aeroControlPerKPa = 2f,   // RCS + four flaps
                     engines = new[] { "Raptor2", "Raptor2", "Raptor2", "RaptorVac", "RaptorVac", "RaptorVac" },
                     fuelType = "Methane", fuelMass = 260900f, oxidizerMass = 939100f, dryMass = 100000f, diameter = 9f,
                     separationDelay = .5f, ignitionDelay = .5f,
@@ -450,8 +515,26 @@ public static class RocketPresets
                 new StageSpec
                 {
                     name = "Orbiter (OMS)", modelStages = new[] { "Orbiter" },
-                    // Black HRSI tiles and RCC on the belly / nose / wing edges.
-                    heat = HeatProtection.Tiles(1650f, 75f), rcsDegPerSec2 = 2f, aeroControlPerKPa = 1.5f,   // 44 RCS thrusters + elevons/body flap
+                    // Enters at 40° angle of attack, gliding (hypersonic L/D
+                    // ~1, 250 m² wing). Reinforced carbon-carbon on the nose
+                    // cap and wing leading edges where the flow stagnates
+                    // (1,650 °C); black HRSI tiles on the belly, lower sides
+                    // and forward fuselage (1,260 °C); white LRSI tiles and
+                    // FRSI blankets on top (650 °C).
+                    heat = new HeatProtection
+                    {
+                        zones = new[]
+                        {
+                            new HeatZone { name = "nose cap (RCC)", direction = HeatZone.Nose, halfAngle = 30, limitC = 1650f, emissivity = .85f, heatCapacity = 8000f, localRadius = 2f },
+                            new HeatZone { name = "wing leading edges (RCC)", direction = HeatZone.AtAngleOfAttack(40), halfAngle = 30, limitC = 1650f, emissivity = .85f, heatCapacity = 8000f, localRadius = 2f },
+                            new HeatZone { name = "belly tiles (HRSI)", direction = HeatZone.Windward, halfAngle = 90, limitC = 1260f, emissivity = .85f, heatCapacity = 3500f, localRadius = 10f },
+                            new HeatZone { name = "forward fuselage tiles (HRSI)", direction = HeatZone.Nose, halfAngle = 60, limitC = 1260f, emissivity = .85f, heatCapacity = 3500f, localRadius = 10f },
+                        },
+                        bare = new HeatZone { name = "upper surface (LRSI/FRSI)", limitC = 650f, emissivity = .8f, heatCapacity = 3000f, localRadius = 10f },
+                        entryDirection = HeatZone.AtAngleOfAttack(40),
+                        liftToDrag = 1f, planformArea = 250f,
+                    },
+                    rcsDegPerSec2 = 2f, aeroControlPerKPa = 1.5f,   // 44 RCS thrusters + elevons/body flap
                     engines = Engines("OMS", 2), fuelType = "MMH",
                     fuelMass = 3100f, oxidizerMass = 5100f, dryMass = 79900f, diameter = 5.2f,
                     burnSeconds = 140f,

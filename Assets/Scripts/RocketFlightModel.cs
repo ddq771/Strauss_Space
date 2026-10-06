@@ -203,6 +203,18 @@ public sealed class RocketFlightModel : MonoBehaviour
     /// orbit propagator while time-warping on rails, when the body is kinematic.</summary>
     public Vector3 GroundVelocity=>TimeWarp.TryGetRailsVelocity(out var rails)?rails:GetComponent<Rigidbody>().linearVelocity/PlanetBody.WorldUnitsPerMeter;
     public double Speed=>GroundVelocity.magnitude;
+    /// <summary>Straight up from the planet's centre (world).</summary>
+    public Vector3 RadialUp=>planet!=null?(transform.position-planet.transform.position).normalized:Vector3.up;
+
+    // A lifting body re-entering (the orbiter): its windward side (local),
+    // hypersonic lift-to-drag ratio, and the area it meets the air with
+    // side-on. Set every physics step for the stage flying.
+    private Vector3 entryWindward;private float entryLiftToDrag,entryPlanformArea;
+    public double Lift{get;private set;}
+    public void SetEntryAerodynamics(Vector3 windwardLocal,float liftToDrag,float planformArea)
+    {
+        entryWindward=windwardLocal;entryLiftToDrag=Mathf.Max(0,liftToDrag);entryPlanformArea=Mathf.Max(0,planformArea);
+    }
     // Signed radial velocity: independent of the rocket's orientation.
     public double VerticalSpeed
     {
@@ -338,10 +350,25 @@ public sealed class RocketFlightModel : MonoBehaviour
         // side, length × diameter, at a crossflow drag coefficient of ~1.2.
         var cosAlpha=Mathf.Abs(Vector3.Dot(transform.up,velocity/speed));
         var sin2=1-cosAlpha*cosAlpha;
-        var sideArea=rocket.ActiveHeight*2*Math.Sqrt(FrontalArea/Math.PI);
+        var sideArea=entryPlanformArea>0?entryPlanformArea:rocket.ActiveHeight*2*Math.Sqrt(FrontalArea/Math.PI);
         Drag=0.5*AirDensity*speed*speed*(dragCoefficient*MachDragFactor(speed/SpeedOfSound)*FrontalArea*cosAlpha+CrossflowDrag*sideArea*sin2);
         var direction=-velocity/speed;
         body.AddForce(direction*(float)(Drag*PlanetBody.WorldUnitsPerMeter),ForceMode.Force);
+        // Lift: with its windward side into the flow, the air pushes the
+        // lifting body away from that side - across the flow, L = (L/D)·D.
+        Lift=0;
+        if(entryLiftToDrag>0 && entryWindward.sqrMagnitude>0)
+        {
+            var motion=velocity/speed;
+            var windward=transform.TransformDirection(entryWindward).normalized;
+            var facing=Vector3.Dot(windward,motion);
+            var across=-(windward-facing*motion);
+            if(facing>.1f && across.sqrMagnitude>1e-6f)
+            {
+                Lift=entryLiftToDrag*Drag;
+                body.AddForce(across.normalized*(float)(Lift*PlanetBody.WorldUnitsPerMeter),ForceMode.Force);
+            }
+        }
         ApplyAeroTorques(body,velocity,speed);
     }
 
