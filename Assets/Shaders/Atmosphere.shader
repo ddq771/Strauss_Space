@@ -26,6 +26,19 @@ Shader "Strauss Space/Atmosphere"
     // white surface and the sky come out in their real-world ratio.
     // Lengths are world units (km in this project); Atmosphere.cs feeds the
     // planet centre/radii and coefficients in those units.
+    //
+    // Clouds: a layer at _CloudAltitude (EarthVisuals sets the globals),
+    // ray-traced here so it works from the pad, through it and from orbit,
+    // with the air in front of it hazing it and the air behind it hidden.
+    // Its density comes from the cloud map as an optical depth, lit by the
+    // two-stream approximation for a scattering layer: thick clouds
+    // reflect ~70% of the sunlight back up and pass the rest down
+    // diffusely (grey bases); thin ones let the sun through and glow
+    // around it (a forward-scattering silver lining). The sunlight
+    // reaching them has crossed the air (the same optical depths as the
+    // sky), so they redden at sunrise and sunset and stay lit after the
+    // ground below has gone dark - and are lit from beneath when the Sun
+    // sits just below their plane.
     Properties
     {
         _PlanetCenter ("Planet Centre (world)", Vector) = (0, 0, 0, 0)
@@ -83,6 +96,13 @@ Shader "Strauss Space/Atmosphere"
             float _SunIntensity, _Saturation;
             float4 _SunDirection;
             float4 _MoonPosition;   // MoonBody: world position, radius
+            // Clouds (globals from EarthVisuals; unset = no clouds).
+            sampler2D _CloudTex;
+            float _CloudsEnabled, _CloudOffset, _CloudAltitude;
+            float4x4 _PlanetRotation;   // world -> planet axes (rotation only)
+            #define CLOUD_THICKNESS 30.0   // optical depth of the densest cloud on the map
+            #define CLOUD_G 0.85           // droplet scattering asymmetry
+            #define CLOUD_BRIGHTNESS 1.5   // a thick cloud under the noon Sun ~ white
             sampler2D _AtmosphereBackground;
             UNITY_DECLARE_DEPTH_TEXTURE(_CameraDepthTexture);
 
@@ -137,6 +157,71 @@ Shader "Strauss Space/Atmosphere"
                     _MieHeight * exp(-h / _MieHeight) * Chapman(r / _MieHeight, mu));
             }
 
+            // Scattered sunlight -> colour, with the saturation lift.
+            float3 SkyLight(float3 sumR, float3 sumM, float3 betaR, float betaM, float mu)
+            {
+                float phaseR = 3.0 / (16.0 * UNITY_PI) * (1 + mu * mu);
+                float g = _MieG;
+                float phaseM = 3.0 / (8.0 * UNITY_PI) * ((1 - g * g) * (1 + mu * mu)) /
+                    ((2 + g * g) * pow(max(1 + g * g - 2 * g * mu, 1e-4), 1.5));
+                float3 light = _SunIntensity * (sumR * betaR * phaseR + sumM * betaM * phaseM);
+                // Single scattering on a gamma display reads greyer than the
+                // eye sees a real sky; a mild saturation lift compensates.
+                float grey = dot(light, float3(0.2126, 0.7152, 0.0722));
+                return max(0, lerp(grey.xxx, light, _Saturation));
+            }
+
+            // The cloud layer where the ray crosses it at p (planet-centred):
+            // light leaving it toward the camera, and its opacity in .a.
+            float4 Cloud(float3 p, float3 dir, float distance, float3 sunDir, bool viewerAbove)
+            {
+                float3 n = normalize(p);
+                float3 axes = mul((float3x3)_PlanetRotation, n);
+                // The planet mesh's UV layout (PlanetBody.BuildUvSphere).
+                float2 uv = float2(frac(atan2(axes.z, axes.x) / (2 * UNITY_PI) + .5 + _CloudOffset),
+                                   1 - acos(clamp(axes.y, -1, 1)) / UNITY_PI);
+                // Mip level from the pixel's footprint on the map (~20 km a
+                // texel), so far clouds don't shimmer.
+                float slant = max(abs(dot(dir, n)), .05);
+                float footprint = distance * 2 / (_ScreenParams.y * UNITY_MATRIX_P[1][1]) / slant;
+                float texel = 2 * UNITY_PI * _PlanetRadius / 2048;
+                float density = tex2Dlod(_CloudTex, float4(uv, 0, max(0, log2(footprint / texel)))).r;
+                float tau = CLOUD_THICKNESS * density * density;
+                if (tau < 1e-3) return 0;
+
+                // Seen through: forward scattering lets most of the light
+                // through thin cloud (scaled optical depth (1-g)·tau).
+                float alpha = 1 - exp(-(1 - CLOUD_G) * tau / slant);
+
+                // Sunlight reaching the layer, filtered by the air above it,
+                // relative to the Sun straight overhead (white at noon).
+                float2 sunDepth = SunOpticalDepth(p, sunDir);
+                if (sunDepth.x < 0) return float4(0, 0, 0, alpha);   // night side: hides what's behind
+                float2 zenith = SunOpticalDepth(p, n);
+                float3 extinctionR = _RayleighScatter.xyz + _OzoneAbsorb.xyz;
+                float3 sunColor = exp(-(extinctionR * (sunDepth.x - zenith.x) + _MieScatter * 1.1 * (sunDepth.y - zenith.y)));
+
+                // Two-stream layer: reflected and diffusely transmitted shares.
+                float mu0 = dot(n, sunDir);
+                float slantSun = max(abs(mu0), .05);
+                float scaled = (1 - CLOUD_G) * tau;
+                float reflected = scaled / (2 + scaled);
+                float direct = exp(-tau / slantSun);
+                float transmitted = saturate(1 - reflected - direct);
+                bool sunAbove = mu0 > 0;
+                float3 color = (sunAbove == viewerAbove ? reflected : transmitted) * slantSun * sunColor;
+                // Silver lining: thin cloud between the camera and the Sun.
+                if (sunAbove != viewerAbove)
+                {
+                    float mu = dot(dir, sunDir), g = .8;
+                    float hg = (1 - g * g) / (4 * UNITY_PI * pow(max(1 + g * g - 2 * g * mu, 1e-4), 1.5));
+                    color += tau * exp(-tau / slantSun) * hg * .5 * sunColor;
+                }
+                // Blue skylight filling the shaded sides.
+                color += alpha * .06 * float3(.55, .7, 1) * saturate(mu0 * 2 + .3);
+                return float4(color * CLOUD_BRIGHTNESS, alpha);
+            }
+
             fixed4 frag(v2f i) : SV_Target
             {
                 float3 background = GammaToLinearSpace(tex2Dproj(_AtmosphereBackground, i.grabPos).rgb);
@@ -166,6 +251,17 @@ Shader "Strauss Space/Atmosphere"
                 }
                 if (end <= start) return fixed4(LinearToGammaSpace(background), 1);
 
+                // Where the ray crosses the cloud layer, if before the ground.
+                float cloudAt = -1;
+                float cloudRadius = _PlanetRadius + _CloudAltitude;
+                bool aboveClouds = length(camera) > cloudRadius;
+                if (_CloudsEnabled > .5)
+                {
+                    float2 layer = Sphere(camera, dir, cloudRadius);
+                    float t = aboveClouds ? layer.x : layer.y;
+                    if (layer.x <= layer.y && t > 0 && t < end) cloudAt = t;
+                }
+
                 float3 sunDir = normalize(_SunDirection.xyz);
                 float3 betaR = _RayleighScatter.xyz;
                 float3 extinctionR = betaR + _OzoneAbsorb.xyz;
@@ -178,11 +274,21 @@ Shader "Strauss Space/Atmosphere"
                 bool inside = atmo.x <= 0;
                 float2 viewDepth = 0;
                 float3 sumR = 0, sumM = 0;
+                // The same sums up to the cloud layer: the air in front of it.
+                float2 viewDepthFront = 0;
+                float3 sumRFront = 0, sumMFront = 0;
+                bool pastCloud = cloudAt < 0;
                 for (int s = 0; s < VIEW_SAMPLES; s++)
                 {
                     float t0 = (float)s / VIEW_SAMPLES, t1 = (float)(s + 1) / VIEW_SAMPLES;
                     if (inside) { t0 *= t0; t1 *= t1; }
-                    float3 p = camera + dir * (start + 0.5 * (t0 + t1) * span);
+                    float along = start + 0.5 * (t0 + t1) * span;
+                    if (!pastCloud && along > cloudAt)
+                    {
+                        pastCloud = true;
+                        viewDepthFront = viewDepth; sumRFront = sumR; sumMFront = sumM;
+                    }
+                    float3 p = camera + dir * along;
                     float h = length(p) - _PlanetRadius;
                     float2 density = exp(-h / float2(_RayleighHeight, _MieHeight)) * (t1 - t0) * span;
                     viewDepth += density;
@@ -194,16 +300,11 @@ Shader "Strauss Space/Atmosphere"
                     sumM += density.y * attenuation;
                 }
 
+                if (!pastCloud) { viewDepthFront = viewDepth; sumRFront = sumR; sumMFront = sumM; }
+
                 float mu = dot(dir, sunDir);
-                float phaseR = 3.0 / (16.0 * UNITY_PI) * (1 + mu * mu);
-                float g = _MieG;
-                float phaseM = 3.0 / (8.0 * UNITY_PI) * ((1 - g * g) * (1 + mu * mu)) /
-                    ((2 + g * g) * pow(max(1 + g * g - 2 * g * mu, 1e-4), 1.5));
-                float3 light = _SunIntensity * (sumR * betaR * phaseR + sumM * betaM * phaseM);
-                // Single scattering on a gamma display reads greyer than the
-                // eye sees a real sky; a mild saturation lift compensates.
+                float3 light = SkyLight(sumR, sumM, betaR, betaM, mu);
                 float grey = dot(light, float3(0.2126, 0.7152, 0.0722));
-                light = max(0, lerp(grey.xxx, light, _Saturation));
 
                 float3 transmittance = exp(-(extinctionR * viewDepth.x + betaM * 1.1 * viewDepth.y));
                 // Open sky: a bright daytime sky drowns out the stars behind
@@ -215,6 +316,15 @@ Shader "Strauss Space/Atmosphere"
                     dot(dir, normalize(_MoonPosition.xyz - _WorldSpaceCameraPos)) > cos(0.012);
                 if (!hitsGround && !hasGeometry && !towardSun && !towardMoon) transmittance *= saturate(1 - 6 * grey);
                 float3 color = background * transmittance + light;
+                if (cloudAt > 0)
+                {
+                    // Air in front of the cloud, the cloud, then (through
+                    // its gaps) everything behind it as before.
+                    float4 cloud = Cloud(camera + dir * cloudAt, dir, cloudAt, sunDir, aboveClouds);
+                    float3 lightFront = SkyLight(sumRFront, sumMFront, betaR, betaM, mu);
+                    float3 transmittanceFront = exp(-(extinctionR * viewDepthFront.x + betaM * 1.1 * viewDepthFront.y));
+                    color = lightFront + transmittanceFront * cloud.rgb + (1 - cloud.a) * (color - lightFront);
+                }
                 return fixed4(LinearToGammaSpace(saturate(color)), 1);
             }
             ENDCG
