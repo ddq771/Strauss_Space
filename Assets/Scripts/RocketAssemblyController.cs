@@ -306,11 +306,54 @@ public sealed class RocketAssemblyController : MonoBehaviour
         GUILayout.Label("Flow: "+flight.FuelFlow.ToString("F2")+" + "+flight.OxidizerFlow.ToString("F2")+" kg/s");
         GUILayout.Label(flight.Status,new GUIStyle(GUI.skin.label){wordWrap=true});
         showFormulas=GUILayout.Toggle(showFormulas,"Show formulas");
-        if(showFormulas)GUILayout.Label("A = sum(pi × D² / 4)\nF = throttle × Fvac − p × A\nFlow = throttle × Fvac / (g0 × IspVac)\nFuel flow = Flow / (1 + O/F)\nLOX flow = Flow − Fuel flow\nTWR = total thrust / (vehicle mass × local gravity)\nGravity = G × planet mass / distance²\nForce direction = mount orientation\nTorque = offset from COM × force\nAltitude = max(0, distance to planet center − planet radius) [m]\nAtmosphere: US Standard Atmosphere 1976 (temperature T and pressure p by layer)\nAir density = p / (287.05 × T)\nSpeed of sound = √(1.4 × 287.05 × T), Mach = speed / speed of sound\nDrag = 0.5 × density × speed² × Cd × Mach factor × body cross-section, opposing velocity\nMach factor: 1 below Mach 0.6, peaks 1.9× at Mach 1.05–1.1, 1.0 by Mach 5\nLinear throttle; attached-flow approximation.",new GUIStyle(GUI.skin.label){wordWrap=true});
+        if(showFormulas)GUILayout.Label(FlightFormulas,new GUIStyle(GUI.skin.label){wordWrap=true,richText=true});
         GUILayout.Space(10);
     }
 
     private static void DrawGimbalIndicator(string label,float angle)
+    // The physics acting on the vehicle in flight, as the simulation applies it.
+    private const string FlightFormulas=
+        "<b>Atmosphere (US Standard Atmosphere 1976)</b>\n"+
+        "Altitude h = |r| − R_earth\n"+
+        "Geopotential H = r0·h / (r0 + h)\n"+
+        "Temperature T = Tb + L·(H − Hb)\n"+
+        "Pressure p = pb·(Tb / T)^(g0M / R*L)\n"+
+        "   isothermal layer: p = pb·e^(−g0M·ΔH / R*Tb)\n"+
+        "Density ρ = p / (287.05·T)\n"+
+        "Speed of sound a = √(1.4·287.05·T), Mach = v / a\n\n"+
+        "<b>Propulsion</b>\n"+
+        "Exit area A = Σ π·D² / 4\n"+
+        "Mass flow mdot = throttle·F_vac / (g0·Isp_vac)\n"+
+        "Thrust F = throttle·F_vac − p·A\n"+
+        "Fuel flow = mdot / (1 + O/F), LOX flow = mdot·(O/F) / (1 + O/F)\n"+
+        "Solid motor F = frac(t)·F_peak − p·A, mdot = frac(t)·F_peak / (g0·Isp)\n"+
+        "TWR = F / (m·g_local)\n\n"+
+        "<b>Mass</b>\n"+
+        "dm/dt = −mdot\n"+
+        "Centre of mass = Σ mi·xi / Σ mi\n"+
+        "Inertia I = m·(3r² + h²) / 12, I_roll = m·r² / 2\n"+
+        "Δv = Isp·g0·ln(m0 / m1)\n\n"+
+        "<b>Gravity</b>\n"+
+        "Earth g = G·M / r²\n"+
+        "Moon (tidal) a = μ_M·(r_m − r) / |r_m − r|³ − μ_M·r_m / |r_m|³\n\n"+
+        "<b>Rotating Earth</b>\n"+
+        "a = −2ω × v − ω × (ω × r), ω = 2π / 86164.09 s\n"+
+        "Orbital speed = |v + ω × r|\n\n"+
+        "<b>Aerodynamics</b>\n"+
+        "Dynamic pressure q = ½·ρ·v²\n"+
+        "Drag D = q·[Cd·f(M)·A·cos α + 1.2·A_side·sin²α]\n"+
+        "   f(M): 1 below Mach 0.6, 1.9× at Mach 1.05–1.1, 1.0 by Mach 5\n"+
+        "Normal force N = q·A·C_Nα·sin α (at the centre of pressure)\n"+
+        "Pitch damping τ = −q·A·L²·C_mq·ω / (2v)\n\n"+
+        "<b>Thrust vectoring</b>\n"+
+        "Gimbal torque τ = L·F·sin θ\n"+
+        "SAS: α = ωn²·error − 2ζωn·ω, θ = asin(I·α / (L·F))\n\n"+
+        "<b>Aerodynamic heating</b>\n"+
+        "Sutton-Graves q = 1.7415e-4·√(ρ / rn)·v³\n"+
+        "Skin C·dT/dt = q·cos^1.5 θ − ε·σ·(T^4 − T_air^4)\n\n"+
+        "<b>Motion</b>\n"+
+        "a = ΣF / m, α = Στ / I";
+
     {
         GUILayout.Label(label+": "+angle.ToString("+0.0;-0.0;0.0")+"°");
         var rect=GUILayoutUtility.GetRect(80f,22f,GUILayout.ExpandWidth(true));
