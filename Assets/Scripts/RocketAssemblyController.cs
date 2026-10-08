@@ -310,7 +310,6 @@ public sealed class RocketAssemblyController : MonoBehaviour
         GUILayout.Space(10);
     }
 
-    private static void DrawGimbalIndicator(string label,float angle)
     // The physics acting on the vehicle in flight, as the simulation applies it.
     private const string FlightFormulas=
         "<b>Atmosphere (US Standard Atmosphere 1976)</b>\n"+
@@ -354,6 +353,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         "<b>Motion</b>\n"+
         "a = ΣF / m, α = Στ / I";
 
+    private static void DrawGimbalIndicator(string label,float angle)
     {
         GUILayout.Label(label+": "+angle.ToString("+0.0;-0.0;0.0")+"°");
         var rect=GUILayoutUtility.GetRect(80f,22f,GUILayout.ExpandWidth(true));
