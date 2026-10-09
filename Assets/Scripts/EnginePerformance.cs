@@ -8,6 +8,11 @@ public sealed class EngineParameters
     public int nozzleCount=1;
     public bool allowGimbal=true;
     public float minimumThrottle=1;
+    // Propellant utilization (PU): the lowest oxidizer/fuel ratio the engine
+    // can shift down to (0 = runs only at mixtureRatio). The J-2's PU valve
+    // moved between 5.5 and 4.5 during the burn so both tanks of the S-II /
+    // S-IVB ran dry together, whatever ratio they had been loaded at.
+    public float puMinimumMixture;
     // Thrust vector control: how far the engine can swivel (degrees) and how
     // fast its actuators move it (degrees per second).
     public float gimbalRange=10f, gimbalRate=15f;
@@ -36,6 +41,21 @@ public static class EnginePerformance
         if(thrust<=0)return new Result{area=a};
         return new Result{valid=true,area=a,thrust=thrust,massFlow=flow,isp=thrust/(G0*flow),fuelFlow=flow/(1+p.mixtureRatio),oxidizerFlow=flow*p.mixtureRatio/(1+p.mixtureRatio)};
     }
+    /// <summary>
+    /// The oxidizer/fuel ratio the engine burns at with these amounts left:
+    /// its rated mixtureRatio, or - with a propellant utilization range - the
+    /// tanks' own remaining ratio, kept within puMinimumMixture..mixtureRatio,
+    /// so whatever was loaded runs out together. (Simplification: total flow,
+    /// thrust and Isp stay at the rated figures; the real J-2 gave ~20% less
+    /// thrust at 4.5 for a few seconds more Isp.)
+    /// </summary>
+    public static double BurnMixture(EngineParameters p,double fuel,double oxidizer)
+    {
+        if(p==null)return 0;
+        if(p.puMinimumMixture<=0 || fuel<=0)return p.mixtureRatio;
+        return Math.Max(p.puMinimumMixture,Math.Min(p.mixtureRatio,oxidizer/fuel));
+    }
+
     public static EngineParameters Reference(string id)
     {
         EngineParameters p;
@@ -67,7 +87,7 @@ public static class EnginePerformance
             // J-2: Saturn V S-II (×5) and S-IVB (×1) engine. 1,033 kN in
             // vacuum, 486 kN at sea level, Isp 421 s, LOX/LH2 at O/F 5.5,
             // ±7° gimbal; no throttling (restartable on the S-IVB).
-            case "J2":p=new EngineParameters{gimbalRange=7,gimbalRate=8,dryMass=1438,vacuumThrust=1033100,vacuumIsp=421,mixtureRatio=5.5f,fuel="LH2",source="Rocketdyne J-2 (Saturn V S-II / S-IVB)",dataStatus="Published performance / calibrated exit area"};p.exitDiameter=CalibratedDiameter(p.vacuumThrust,486200,1);return p;
+            case "J2":p=new EngineParameters{puMinimumMixture=4.5f,gimbalRange=7,gimbalRate=8,dryMass=1438,vacuumThrust=1033100,vacuumIsp=421,mixtureRatio=5.5f,fuel="LH2",source="Rocketdyne J-2 (Saturn V S-II / S-IVB)",dataStatus="Published performance / calibrated exit area"};p.exitDiameter=CalibratedDiameter(p.vacuumThrust,486200,1);return p;
             // Upper-stage engines (no catalog model - their bodies carry them):
             // Merlin Vacuum: 981 kN, Isp 348 s, 3.3 m nozzle, ±5°.
             case "MerlinVac":return new EngineParameters{gimbalRange=5,gimbalRate=10,dryMass=490,vacuumThrust=981000,vacuumIsp=348,exitDiameter=3.3f,mixtureRatio=2.36f,minimumThrottle=.39f,source="SpaceX Merlin Vacuum (Falcon 9 second stage)",dataStatus="Published performance / estimated mass"};

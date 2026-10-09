@@ -116,7 +116,10 @@ public sealed class FlightRecorder : MonoBehaviour
         else if (elapsed + dt * 0.5 >= nextSample)
         {
             WriteRow();
+            // One row per step at most: at high warp a step spans many
+            // intervals - skip to the next one ahead rather than owe a backlog.
             nextSample += sampleInterval;
+            if (nextSample <= elapsed) nextSample = (Math.Floor(elapsed / sampleInterval) + 1) * sampleInterval;
         }
     }
 

@@ -67,6 +67,21 @@ public sealed class SolarSystem : MonoBehaviour
         earthRotationRad + (planet != null ? planet.RotationRate : 0) * (Date - startDateUtc).TotalSeconds;
 
     public DateTime Date { get; private set; }
+    private float dateGameTime;   // Time.time when Date was last advanced
+    /// <summary>
+    /// The date at game time t (Time.time - inside FixedUpdate, the physics
+    /// step's time). Date advances once a frame; physics steps fall between
+    /// frames, and the Moon sweeps through the Earth-fixed scene at ~28
+    /// km/s, so it must be placed for the step's own moment.
+    /// </summary>
+    public DateTime DateAt(float gameTime) => AddSecondsExact(Date, (gameTime - dateGameTime) * TimeWarp.ClockMultiplier);
+    // DateTime.AddSeconds rounds to whole milliseconds: a frame's worth of
+    // seconds added that way drifts (a 16.7 ms frame counts as 17 ms; at
+    // thousands of frames a second the clock barely moves). Ticks are 100 ns.
+    private static DateTime AddSecondsExact(DateTime date, double seconds) => date.AddTicks((long)Math.Round(seconds * TimeSpan.TicksPerSecond));
+    /// <summary>Earth's rotation angle (rad) at a given date.</summary>
+    public double RotationAngleAt(DateTime date) =>
+        earthRotationRad + (planet != null ? planet.RotationRate : 0) * (date - startDateUtc).TotalSeconds;
     public double DistanceMeters { get; private set; }
     public double OrbitalSpeed { get; private set; }         // m/s, Earth around the Sun
     public double SubsolarLatitude { get; private set; }     // deg = the Sun's declination
@@ -106,6 +121,7 @@ public sealed class SolarSystem : MonoBehaviour
             earthRotationRad = rightAscension - sceneLongitude;
         }
         startDateUtc = Date;
+        dateGameTime = Time.time;
         view = FindFirstObjectByType<AssemblyViewCamera>();
         if (axisLine == null) axisLine = MakeLine("Earth Spin Axis", new Color(1f, .45f, .35f, .9f), false);
         if (orbitLine == null) orbitLine = MakeLine("Earth's Orbit", new Color(.45f, .75f, 1f, .8f), true);
@@ -120,7 +136,8 @@ public sealed class SolarSystem : MonoBehaviour
         if (NeedsInitialize) Initialize();
         // Game time, including physics warp (×2..×10, via timeScale) and
         // rails warp (×100, ×1000).
-        Date = Date.AddSeconds(Time.deltaTime * TimeWarp.ClockMultiplier);
+        Date = AddSecondsExact(Date, Time.deltaTime * TimeWarp.ClockMultiplier);
+        dateGameTime = Time.time;
         Apply();
     }
 

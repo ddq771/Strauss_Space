@@ -36,6 +36,7 @@ public sealed class PlanetBody : MonoBehaviour
     [SerializeField] private int latitudeSegments = 48;
 
     public float Radius => radius;
+    private const float HillSphereMeters = 1.5e9f;
     public float Mass => mass;
 
     // Earth turns once per sidereal day (23 h 56 min 4 s), eastward about its
@@ -105,8 +106,11 @@ public sealed class PlanetBody : MonoBehaviour
             return;
         }
 
+        // Gravity has no edge: within its Hill sphere (~1.5 million km,
+        // well past the Moon) Earth's pull dominates. The scene's old 10,000
+        // km setting switched it off for anything heading to the Moon.
         var searchRadius = gravityInfluenceRadius > 0f
-            ? gravityInfluenceRadius * WorldUnitsPerMeter
+            ? Mathf.Max(gravityInfluenceRadius, HillSphereMeters) * WorldUnitsPerMeter
             : float.MaxValue;
         var colliders = Physics.OverlapSphere(
             transform.position,

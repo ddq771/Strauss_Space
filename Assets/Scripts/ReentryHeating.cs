@@ -128,12 +128,20 @@ public sealed class ReentryHeating : MonoBehaviour
         UpdateVisuals(Vector3.zero);
     }
 
-    private void Awake() { for (var i = 0; i < temperature.Length; i++) temperature[i] = 288.15; }
+    private void Awake()
+    {
+        for (var i = 0; i < temperature.Length; i++) temperature[i] = 288.15;
+        FloatingOrigin.Shifted += OnOriginShifted;
+    }
+    private void OnOriginShifted(Vector3 offset) => trailHead += offset;
 
     private void FixedUpdate()
     {
         if (AirVelocity == null || Burned) return;
         if (Active != null && !Active()) { HeatFlux = 0; Glow = 0; return; }
+        // On rails (only ever above the air) there's no heating to follow -
+        // and at ×1,000,000 a step would be 80,000 sub-steps per patch.
+        if (TimeWarp.OnRails) { HeatFlux = 0; Glow = 0; return; }
         var dt = Time.fixedDeltaTime * TimeWarp.ClockMultiplier;
         var velocity = AirVelocity();
         var speed = (double)velocity.magnitude;
@@ -454,6 +462,7 @@ public sealed class ReentryHeating : MonoBehaviour
 
     private void OnDestroy()
     {
+        FloatingOrigin.Shifted -= OnOriginShifted;
         if (sheathMaterial != null) Destroy(sheathMaterial);
         if (heatMapMaterial != null) Destroy(heatMapMaterial);
     }

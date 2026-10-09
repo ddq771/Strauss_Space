@@ -291,6 +291,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         }
         GUILayout.Label("Speed: "+flight.Speed.ToString("F1")+" m/s · Mach "+flight.Mach.ToString("F2"));
         ReentryGUI();
+        MoonGUI(trajectory);
         GUILayout.Label(new GUIContent("Orbital speed: "+flight.OrbitalSpeed.ToString("F0")+" m/s", "Speed relative to the stars: ground speed plus Earth's rotation (~463 m/s eastward at the equator). ~7,800 m/s holds a low orbit."));
         GUILayout.Label("Pressure: "+(flight.Pressure/1000).ToString("F1")+" kPa · Air: "+(flight.AirTemperature-273.15).ToString("F0")+" °C");
         GUILayout.Label(new GUIContent("Vertical speed: "+flight.VerticalSpeed.ToString("+0.0;-0.0;0.0")+" m/s", "Radial velocity relative to the planet: positive ascending, negative descending."));
@@ -1087,6 +1088,55 @@ public sealed class RocketAssemblyController : MonoBehaviour
         notice=on?"Re-entry attitude: turning to "+(CurrentHeatProtection.HasShield?"the attitude the heat shield was built for":"nose-first")+" (RCS, engines off).":"Re-entry attitude off - holding attitude.";
     }
 
+    // The Moon: the predicted encounter, then altitude and speeds over its
+    // ground, the touchdown limits on the way down, and lift-off on it.
+    private void MoonGUI(TrajectoryDisplay trajectory)
+    {
+        var moon=MoonBody.Instance;
+        if(moon==null)return;
+        if(moon.Landed)
+        {
+            var weight=flight.TotalMass*MoonBody.SurfaceGravity;
+            GUILayout.Label(new GUIContent("On the Moon · "+MoonBody.Coordinates(moon.RocketLatitude,moon.RocketLongitude)+
+                "\nLunar weight "+(weight/1000).ToString("N1")+" kN: throttle up past it to lift off.",
+                "Standing on the Moon's mean surface, carried round with it."),new GUIStyle(GUI.skin.label){wordWrap=true});
+            return;
+        }
+        if(trajectory!=null && !moon.RocketNear)
+        {
+            if(trajectory.WillImpactMoon)GUILayout.Label("Moon impact in "+TrajectoryDisplay.Clock(trajectory.TimeToMoonImpact));
+            else if(trajectory.MoonEncounter && trajectory.TimeToMoonPeriapsis>0)
+                GUILayout.Label("Moon encounter · closest "+TrajectoryDisplay.Km(trajectory.MoonPeriapsisAltitude)+" in "+TrajectoryDisplay.Clock(trajectory.TimeToMoonPeriapsis));
+        }
+        if(!moon.RocketNear)return;
+        var style=new GUIStyle(GUI.skin.label){wordWrap=true,richText=true};
+        var altitude=moon.RocketAltitude;
+        var text="Moon altitude "+(altitude<10000?altitude.ToString("N0")+" m":TrajectoryDisplay.Km(altitude))+
+            " · vertical "+moon.RocketVerticalSpeed.ToString("+0.0;-0.0;0.0")+" m/s · horizontal "+moon.RocketHorizontalSpeed.ToString("F1")+" m/s";
+        if(trajectory!=null)
+        {
+            if(trajectory.WillImpactMoon)text+="\nMoon impact in "+TrajectoryDisplay.Clock(trajectory.TimeToMoonImpact);
+            else if(trajectory.TimeToMoonPeriapsis>0)text+="\nMoon Pe "+TrajectoryDisplay.Km(trajectory.MoonPeriapsisAltitude)+" in "+TrajectoryDisplay.Clock(trajectory.TimeToMoonPeriapsis);
+        }
+        if(altitude<5000)
+        {
+            // Touchdown limits, green when inside them.
+            string Check(bool ok,string what)=>"<color="+(ok?"#7dff8a":"#ff6a5a")+">"+what+"</color>";
+            var tilt=Vector3.Angle(transform.up,(transform.position-moon.transform.position).normalized);
+            text+="\nTouchdown: "+Check(-moon.RocketVerticalSpeed<=MoonBody.SafeVerticalSpeed,"≤"+MoonBody.SafeVerticalSpeed.ToString("F0")+" m/s down")+" · "+
+                Check(moon.RocketHorizontalSpeed<=MoonBody.SafeHorizontalSpeed,"≤"+MoonBody.SafeHorizontalSpeed.ToString("F0")+" m/s across")+" · "+
+                Check(tilt<=MoonBody.SafeTiltDegrees,"≤"+MoonBody.SafeTiltDegrees.ToString("F0")+"° tilt ("+tilt.ToString("F0")+"°)");
+        }
+        GUILayout.Label(new GUIContent(text,"Height of the rocket's base above the Moon's mean surface, and its speed relative to the Moon's ground (which turns with it)."),style);
+    }
+
+    /// <summary>A Moon landing, lift-off or crash: banner and notice.</summary>
+    public void ReportMoon(string banner,string message)
+    {
+        notice=message;
+        Banner(banner);
+    }
+
     public void ReportBurnUp(string reason)
     {
         notice="Burned up on re-entry at T+"+RocketFlightModel.Clock(flight.MissionTime)+": "+reason+".";
@@ -1290,6 +1340,77 @@ public sealed class RocketAssemblyController : MonoBehaviour
     // behind Starship's big gimbals to go unstable and tip it over.
     private Vector2 pilotInput;
 
+    // --- Autopilot hooks (Autopilot.cs) ----------------------------------
+    // With AutopilotSteering set, SAS holds AutopilotAttitude (engines under
+    // thrust, RCS while coasting) instead of the attitude it latched itself.
+    // How: UpdateFlightGimbals and ApplyAttitudeControl, where SAS would use
+    // its own held attitude, copy AutopilotAttitude into holdAttitude each
+    // physics step; the error between that and the present rotation then
+    // drives the gimbals / RCS exactly as for a pilot's hold.
+    [NonSerialized] public bool AutopilotSteering;
+    [NonSerialized] public Quaternion AutopilotAttitude=Quaternion.identity;
+    // The pilot is pressing a pitch/yaw key (ReadFlightInput's vector isn't zero).
+    public bool PilotSteering=>pilotInput.sqrMagnitude>.0001f;
+    /// <summary>A stage is separating or waiting to light: leave the engines
+    /// alone. How: 'separated' is set from separation until the next stage
+    /// ignites; 'separationAt' is set when a spent stage is waiting out its
+    /// separation delay (both reset by Ignite).</summary>
+    public bool StagingInProgress=>separated || separationAt>=0;
+    // Turns SAS on (clearing the held attitude so it re-latches) and the
+    // re-entry attitude hold off, so the autopilot's attitude is what's held.
+    public void EngageSas(){if(!sasEnabled){sasEnabled=true;holdingAttitude=false;}reentryAttitude=false;}
+    // Auto-staging on: UpdateStaging then separates and lights stages on the
+    // real timeline by itself.
+    public void SetAutoStaging(bool on)=>autoStaging=on;
+    // The Launch button's routine (refuses, with a notice, if TWR < 1).
+    public void Launch()=>TryLaunch();
+    // The last message shown to the pilot (e.g. why a launch was refused).
+    public string Notice=>notice;
+    // Flying one of RocketPresets.All (a real vehicle), and which one.
+    public bool IsPreset=>activePresetIndex>=0;
+    public int PresetIndex=>activePresetIndex;
+    /// <summary>Sets the throttle as the pilot would, lighting or shutting
+    /// down the engines. How: stores it in commandedThrottle (the value the
+    /// slider and keys share); at 0 it stops the engines; otherwise it
+    /// clears a pilot's "Shutdown" and either changes the running engines'
+    /// throttle or lights them (Rocket.StartEngine checks propellant etc.).</summary>
+    public void SetAutopilotThrottle(float throttle)
+    {
+        commandedThrottle=Mathf.Clamp01(throttle);
+        if(commandedThrottle<=0){if(rocket.EngineEnabled)rocket.StopEngine();return;}
+        pilotShutdown=false;
+        if(rocket.EngineEnabled)rocket.SetThrottle(commandedThrottle);
+        else rocket.StartEngine(commandedThrottle);
+    }
+    /// <summary>The lowest throttle every installed engine can run at (1 =
+    /// none can throttle). How: the largest minimumThrottle among the
+    /// installed engines - below it at least one engine would be outside its
+    /// working range and the engine model refuses to run.</summary>
+    public float MinimumThrottle
+    {
+        get
+        {
+            var min=0f;
+            for(var i=0;i<SocketCount;i++){var p=GetParameters(i);if(p!=null)min=Mathf.Max(min,p.minimumThrottle);}
+            return min>0?min:1f;
+        }
+    }
+    /// <summary>Vacuum thrust (N) and thrust-weighted vacuum Isp (s) of the
+    /// installed engines. How: sums thrust, and sums mass flow as thrust/Isp
+    /// for each engine; the combined Isp is total thrust / total (thrust/Isp)
+    /// - what one engine giving the same thrust and flow would have.</summary>
+    public void InstalledEngines(out double vacuumThrust,out double vacuumIsp)
+    {
+        double thrust=0,flow=0;
+        for(var i=0;i<SocketCount;i++)
+        {
+            var p=GetParameters(i);
+            if(p==null || p.vacuumIsp<=0)continue;
+            thrust+=p.vacuumThrust;flow+=p.vacuumThrust/p.vacuumIsp;
+        }
+        vacuumThrust=thrust;vacuumIsp=flow>0?thrust/flow:0;
+    }
+
     private void ReadFlightInput()
     {
         if(IgnorePilotInput)return;   // tests drive pilotInput themselves
@@ -1415,9 +1536,10 @@ public sealed class RocketAssemblyController : MonoBehaviour
             alpha=sasEnabled?(new Vector3(input.x,0,input.y)*SasMaxRate*Mathf.Deg2Rad-omega)*SasRateGain
                             :new Vector3(input.x,0,input.y)*limit;
         }
-        else if(sasEnabled || reentryAttitude)
+        else if(sasEnabled || reentryAttitude || AutopilotSteering)
         {
-            if(reentryAttitude)
+            if(AutopilotSteering){holdAttitude=AutopilotAttitude;holdingAttitude=true;}
+            else if(reentryAttitude)
             {
                 // The attitude the stage was built to enter at: that side
                 // toward the direction of motion (it meets the air first) -
@@ -1484,6 +1606,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
             }
             else
             {
+                if(AutopilotSteering){holdAttitude=AutopilotAttitude;holdingAttitude=true;}
                 if(!holdingAttitude){holdAttitude=transform.rotation;holdingAttitude=true;}
                 (Quaternion.Inverse(transform.rotation)*holdAttitude).ToAngleAxis(out var angle,out var axis);
                 if(angle>180)angle-=360;
@@ -1581,21 +1704,24 @@ public sealed class RocketAssemblyController : MonoBehaviour
     private void TimeWarpControls()
     {
         GUILayout.Label("Simulation speed: ×"+TimeWarp.Rate.ToString("N0")+(TimeWarp.OnRails?(rocket.Launched?" (on rails)":" (clock)"):""));
-        // Two rows - physics speeds, then rails warp - so six buttons fit the
-        // panel width without squashing.
+        // Rows - physics speeds, then rails warp in two rows - so the buttons
+        // fit the panel width without squashing.
         GUILayout.BeginHorizontal();
         foreach (var rate in TimeWarp.Rates)
         {
-            if (rate >= TimeWarp.RailsFrom && Mathf.Approximately(rate, TimeWarp.RailsFrom))
+            if (Mathf.Approximately(rate, TimeWarp.RailsFrom) || Mathf.Approximately(rate, 100000))
             {
                 GUILayout.EndHorizontal();
                 GUILayout.BeginHorizontal();
-                GUILayout.Label("Warp:", GUILayout.Width(44));
+                GUILayout.Label(Mathf.Approximately(rate, TimeWarp.RailsFrom)?"Warp:":"", GUILayout.Width(44));
             }
             var previousColor = GUI.backgroundColor;
             GUI.backgroundColor = Mathf.Approximately(TimeWarp.Rate, rate)
                 ? new Color(1f, .72f, .3f) : Color.white;
-            if (GUILayout.Button("×"+rate.ToString("N0"))) TimeWarp.Request(rate);
+            // Short labels for the big rates (×10k, ×100k, ×1M) so a row of
+            // them still fits the 320 px panel.
+            var label=rate>=1e6f?"×"+(rate/1e6f).ToString("0")+"M":rate>=1e4f?"×"+(rate/1e3f).ToString("0")+"k":"×"+rate.ToString("N0");
+            if (GUILayout.Button(label)) TimeWarp.Request(rate);
             GUI.backgroundColor = previousColor;
         }
         GUILayout.EndHorizontal();

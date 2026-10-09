@@ -33,6 +33,20 @@ public sealed class AssemblyViewCamera : MonoBehaviour
 
     public void SetPlanet(PlanetBody value) => planet = value;
 
+    // Unity's built-in mouse events (OnMouseDown, OnMouseEnter...) cast a ray
+    // from the mouse through every camera each frame. Nothing here uses them
+    // - parts are picked by RocketAssemblyController.SelectAtRay - and with
+    // this scene's clip planes (metres on the pad, hundreds of millions of
+    // km in the solar system view) that ray maths breaks down and floods the
+    // console with "Screen position out of view frustum". An event mask of
+    // 0 takes each camera out of that pass entirely.
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+    private static void DisableMouseEvents()
+    {
+        foreach (var camera in FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            camera.eventMask = 0;
+    }
+
     private void Start()
     {
         InitializeZoom();
@@ -103,7 +117,16 @@ public sealed class AssemblyViewCamera : MonoBehaviour
         var rocket=FindFirstObjectByType<Rocket>();
         if(rocket!=null && rocket.Launched && distance<1000000f && transform.parent!=null)
         {
-            target=transform.parent.InverseTransformPoint(rocket.transform.position);
+            // Follow the vehicle's centre of mass - the point it really turns
+            // about - plus any panning the pilot has added (flightFocusOffset,
+            // metres in the rocket's own axes, so it turns with the rocket).
+            // The rocket's root is the middle of the whole original stack;
+            // after staging that can lie below the remaining stage's engine,
+            // and a camera centred there made the stage appear to swing round
+            // its engine. The centre of mass moves to the stage still flying.
+            var body=rocket.GetComponent<Rigidbody>();
+            var centre=body!=null?body.worldCenterOfMass:rocket.transform.position;
+            target=transform.parent.InverseTransformPoint(centre);
             target+=transform.parent.InverseTransformVector(
                 rocket.transform.TransformVector(flightFocusOffset*PlanetBody.WorldUnitsPerMeter));
         }
@@ -275,6 +298,18 @@ public sealed class AssemblyViewCamera : MonoBehaviour
             // Never further than the far side of the planet from the map
             // camera (which sits at radius + distance from the centre).
             camera.farClipPlane = Mathf.Min(neededFarMeters, planet.Radius * 2.2f + distance * 1.1f) * scale;
+            // Near the Moon its ground is what's close: size the view to its
+            // horizon instead (from Earth's altitude the near clip would sit
+            // hundreds of metres out and cut the rocket away).
+            var moon = MoonBody.Instance;
+            if (moon != null && moon.RocketNear && trackedRocket != null && trackedRocket.Launched)
+            {
+                var moonRadius = (float)MoonBody.RadiusMeters;
+                var height = Mathf.Max(distance, (float)moon.RocketAltitude);
+                var moonHorizon = Mathf.Sqrt(Mathf.Max(0f, (moonRadius + height) * (moonRadius + height) - moonRadius * moonRadius));
+                var neededNearMoon = Mathf.Max(distance * 3f, (height + moonHorizon) * 1.5f);
+                camera.farClipPlane = Mathf.Min(neededNearMoon, moonRadius * 2.2f + distance * 1.1f) * scale;
+            }
             // Map view reaches out past the Moon's orbit (≤ ~407,000 km).
             if (OrbitalBlend(distance) > 0f)
                 camera.farClipPlane = Mathf.Max(camera.farClipPlane, (planet.Radius + distance + 4.15e8f) * scale);
@@ -375,10 +410,15 @@ public sealed class AssemblyViewCamera : MonoBehaviour
     {
         var rocket = FindFirstObjectByType<Rocket>();
         if (rocket == null || transform.parent == null) return;
-        // Centre of the active stack, relative to the rocket's pivot (its
-        // full height's middle).
-        flightFocusOffset = Vector3.up * ((rocket.ActiveBottom + rocket.ActiveTop) * .5f - rocket.TotalHeight * .5f);
-        target = transform.parent.InverseTransformPoint(rocket.transform.TransformPoint(flightFocusOffset * PlanetBody.WorldUnitsPerMeter));
+        // In flight the view centres on the vehicle's centre of mass (see the
+        // follow code in Update), so no panning offset; on the pad, the
+        // centre of the stack.
+        flightFocusOffset = Vector3.zero;
+        var body = rocket.GetComponent<Rigidbody>();
+        var centre = rocket.Launched && body != null
+            ? body.worldCenterOfMass
+            : rocket.transform.TransformPoint(Vector3.up * ((rocket.ActiveBottom + rocket.ActiveTop) * .5f - rocket.TotalHeight * .5f) * PlanetBody.WorldUnitsPerMeter);
+        target = transform.parent.InverseTransformPoint(centre);
         desiredDistance = Mathf.Max(40f, rocket.ActiveHeight * 2.4f);
     }
 

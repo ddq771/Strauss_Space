@@ -159,6 +159,7 @@ public sealed class RocketFlightModel : MonoBehaviour
     private PlanetBody planet;
     [SerializeField] private bool crashed;
     private Vector3 previousPosition;
+    private void OnOriginShifted(Vector3 offset)=>previousPosition+=offset;
     private bool trackingImpact;
     private readonly System.Collections.Generic.List<Renderer> impactHidden=new System.Collections.Generic.List<Renderer>();
     public double HorizontalSpeed=>Math.Sqrt(Math.Max(0,Speed*Speed-VerticalSpeed*VerticalSpeed));
@@ -226,7 +227,8 @@ public sealed class RocketFlightModel : MonoBehaviour
         }
     }
     private void Bind(){assembly??=GetComponent<RocketAssemblyController>();rocket??=GetComponent<Rocket>();planet??=FindFirstObjectByType<PlanetBody>();}
-    private void OnEnable(){Bind();}
+    private void OnEnable(){Bind();FloatingOrigin.Shifted+=OnOriginShifted;}
+    private void OnDisable()=>FloatingOrigin.Shifted-=OnOriginShifted;
     public void Configure(string fuel,float fill)
     {
         Bind();if(rocket.Launched)return;fuelType=fuel;initialFill=Mathf.Clamp01(fill);
@@ -409,15 +411,49 @@ public sealed class RocketFlightModel : MonoBehaviour
     // (~463 m/s at the equator) and make orbits curve correctly as seen from
     // the ground. Velocities here are relative to the ground - and to the
     // air, which turns with Earth, so drag needs no correction.
+    //
+    // Simply adding −2ω×v − ω×(ω×r) each 0.02 s physics step isn't good
+    // enough in orbit: there the Coriolis term is ~1 m/s², and stepping it
+    // that way loses a little orbital energy every step - always the same
+    // way, so the low point sank a few km a day. Instead, each step is made
+    // to land exactly where a step in a non-rotating frame would, then seen
+    // from the turned Earth:
+    //  1. x = centre of mass (m from Earth's centre), u = the stored
+    //     rotating-frame velocity; S = the turn Earth makes in one step, as
+    //     it looks from the ground (an inertially fixed vector turns by
+    //     −|ω|·dt about the spin axis);
+    //  2. the true (non-rotating) velocity V is recovered from the last
+    //     step: PhysX moved the body from x − u·dt to x, and that point,
+    //     carried along by the turn, is S(x − u·dt); so V = (x − S(x − u·dt))/dt;
+    //  3. a non-rotating step: gravity first (W = V + g·dt), then the move
+    //     to x + W·dt, which in the turned frame is S(x + W·dt);
+    //  4. the stored velocity that makes PhysX's own update (x += u·dt) land
+    //     there is u' = (S(x + W·dt) − x)/dt, so the acceleration to add is
+    //     (u' − u)/dt, less the gravity PlanetBody adds itself.
+    // For small steps this is the same Coriolis + centrifugal pull, but the
+    // orbit's energy no longer drifts. All in double precision: x is ~6.6
+    // million m while a step moves it ~150 m.
     private void ApplyRotatingFrame(Rigidbody body)
     {
         if(planet==null || body.isKinematic)return;
         var spin=planet.SpinVector;
         if(spin==Vector3.zero)return;
-        var r=(body.worldCenterOfMass-planet.transform.position)/PlanetBody.WorldUnitsPerMeter;
-        var v=body.linearVelocity/PlanetBody.WorldUnitsPerMeter;
-        var a=-2f*Vector3.Cross(spin,v)-Vector3.Cross(spin,Vector3.Cross(spin,r));
-        body.AddForce(a*PlanetBody.WorldUnitsPerMeter,ForceMode.Acceleration);
+        double dt=Time.fixedDeltaTime,u=PlanetBody.WorldUnitsPerMeter;
+        var mu=PlanetBody.UniversalGravitationalConstant*planet.Mass;
+        var x=(new Double3(body.worldCenterOfMass)-FloatingOrigin.PlanetCentre)/u;
+        var velocity=new Double3(body.linearVelocity)/u;
+        var axis=new Double3(spin).Normalized;
+        var turn=-spin.magnitude*dt;
+        // Rodrigues' rotation by 'turn' about 'axis': the part along the axis
+        // stays, the part across it turns in the plane with axis × p.
+        Double3 S(Double3 p)=>p*Math.Cos(turn)+Double3.Cross(axis,p)*Math.Sin(turn)+axis*(Double3.Dot(axis,p)*(1-Math.Cos(turn)));
+        var trueVelocity=(x-S(x-velocity*dt))/dt;                  // step 2
+        var rl=Math.Max(x.Length,planet.Radius);
+        var gravity=x*(-mu/(rl*rl*x.Length));                        // as PlanetBody applies it
+        var afterGravity=trueVelocity+gravity*dt;                    // step 3
+        var stored=(S(x+afterGravity*dt)-x)/dt;                      // step 4
+        var a=(stored-velocity)/dt-gravity;
+        body.AddForce(a.ToVector3()*(float)u,ForceMode.Acceleration);
     }
 
     /// <summary>Speed relative to the stars (ground speed plus Earth's rotation) - what orbits care about.</summary>
@@ -484,7 +520,11 @@ public sealed class RocketFlightModel : MonoBehaviour
             if(p.fuel!=fuelType){Status="Fuel mismatch: engine requires "+p.fuel+". Choose matching engines or change tank fuel.";return false;}
             var r=EnginePerformance.Evaluate(p,throttle,Pressure);
             if(!r.valid){Status="Outside engine model range: check parameters, pressure and minimum throttle.";return false;}
-            totalThrust+=r.thrust;totalFuelFlow+=r.fuelFlow;totalOxidizerFlow+=r.oxidizerFlow;
+            // Fuel / oxidizer split of this engine's flow at the mixture it
+            // burns now - shifted toward the tanks' ratio by an engine with
+            // propellant utilization (the J-2), so neither strands the other.
+            var mixture=EnginePerformance.BurnMixture(p,fuelRemaining,oxidizerRemaining);
+            totalThrust+=r.thrust;totalFuelFlow+=r.massFlow/(1+mixture);totalOxidizerFlow+=r.massFlow*mixture/(1+mixture);
         }
         if(running==0){Status="All engines shut down by the flight program.";return false;}
         LiquidThrust=totalThrust;FuelFlow=totalFuelFlow;OxidizerFlow=totalOxidizerFlow;
@@ -534,6 +574,11 @@ public sealed class RocketFlightModel : MonoBehaviour
         ApplyRotatingFrame(GetComponent<Rigidbody>());
         var current=transform.position;
         if(!trackingImpact){previousPosition=current;trackingImpact=true;}
+        // On rails the rocket follows its exact orbit and the warp stops
+        // itself before the air; at the top speeds one frame spans whole
+        // orbits, and the straight line between positions would cut
+        // through the planet.
+        if(TimeWarp.OnRails){previousPosition=current;return;}
         var center=planet.transform.position;
         double radius=planet.Radius*PlanetBody.WorldUnitsPerMeter;
         var start=previousPosition-center;var delta=current-previousPosition;
@@ -549,16 +594,22 @@ public sealed class RocketFlightModel : MonoBehaviour
         previousPosition=current;
         if(t<0 || t>1)return;
         var normal=(start+delta*(float)t).normalized;
-        var point=center+normal*(float)radius;
+        Impact(center+normal*(float)radius,normal,null);
+    }
+
+    /// <summary>Hits the ground at 'point' (world; 'normal' = local up): destroyed, with fireball and debris.</summary>
+    public void Impact(Vector3 point,Vector3 normal,string reason)
+    {
+        if(crashed)return;
         transform.position=point;
         var body=GetComponent<Rigidbody>();
-        rocket.StopEngine();body.linearVelocity=Vector3.zero;body.angularVelocity=Vector3.zero;body.isKinematic=true;
+        rocket.StopEngine();body.isKinematic=false;body.linearVelocity=Vector3.zero;body.angularVelocity=Vector3.zero;body.isKinematic=true;
         crashed=true;LiquidThrust=0;SolidThrust=0;solidPropellant=0;FuelFlow=0;OxidizerFlow=0;
         foreach(var surface in GetComponentsInChildren<Renderer>())if(surface.enabled){impactHidden.Add(surface);surface.enabled=false;}
         // Artistic fireball volume scales with remaining fuel, not a blast model.
         float size=5f+4f*Mathf.Pow(Mathf.Max(0,fuelRemaining),1f/3f);
         fuelRemaining=0;oxidizerRemaining=0;UpdateMass();
-        Status="Impact — vehicle destroyed. Return to assembly to rebuild.";
+        Status=(reason??"Impact")+" — vehicle destroyed. Return to assembly to rebuild.";
         StartCoroutine(ImpactEffect(point,normal,size));
         StartCoroutine(ImpactDebris(point,normal));
     }

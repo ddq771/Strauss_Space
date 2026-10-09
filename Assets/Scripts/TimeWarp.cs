@@ -3,7 +3,7 @@ using UnityEngine;
 
 /// <summary>
 /// Simulation speed. Up to ×10 the physics simply runs faster
-/// (Time.timeScale). ×100 and ×1000 are "on rails", as in KSP: thousands of
+/// (Time.timeScale). ×100 up to ×1,000,000 are "on rails", as in KSP: thousands of
 /// physics steps a second would be far too slow (and Unity caps timeScale at
 /// 100), so the rocket is taken off physics and moved along its exact
 /// two-body orbit (universal-variable Kepler propagation) while Earth keeps
@@ -11,14 +11,24 @@ using UnityEngine;
 /// so rails warp needs the rocket above 100 km and coasting; it drops back
 /// to ×1 by itself before the orbit dips into the atmosphere. On the pad it
 /// just fast-forwards the clock (Sun, day/night, seasons).
+///
+/// Out past 50,000 km, or near the Moon, a two-body orbit is no longer the
+/// real path: there the rails integrate Earth's and the Moon's gravity
+/// together (EarthMoonDynamics, the forces the physics applies), and drop
+/// back to ×1 before the rocket comes within 10 km of the Moon's surface.
+/// Landed on the Moon it only fast-forwards the clock, as on the pad.
 /// </summary>
 public sealed class TimeWarp : MonoBehaviour
 {
-    public static readonly float[] Rates = { 1, 2, 5, 10, 100, 1000 };
+    public static readonly float[] Rates = { 1, 2, 5, 10, 100, 1000, 10000, 100000, 1000000 };
     public const float RailsFrom = 100f;
     private const double AtmosphereTop = 100000;   // m
-    // Longest single rails step - keeps a slow frame from skipping far ahead.
-    private const float MaxRealStep = .1f;
+    // The rails step is the frame's whole time (Unity already caps
+    // Time.deltaTime at Time.maximumDeltaTime): the simulation date, which
+    // places the Moon and Sun, advances by exactly that too. Cutting the
+    // step shorter left the rocket behind the clock after every slow frame.
+    private const double MoonPathFrom = 50e6;     // m from Earth's centre
+    private const double MoonStopAltitude = 10000; // m above the Moon
 
     public static float Rate { get; private set; } = 1;
     public static bool OnRails => Rate >= RailsFrom;
@@ -42,6 +52,8 @@ public sealed class TimeWarp : MonoBehaviour
         foreach (var model in FindObjectsByType<RocketFlightModel>(FindObjectsSortMode.None))
             if (model.GetComponent<TimeWarp>() == null) model.gameObject.AddComponent<TimeWarp>();
     }
+
+    private void OnEnable() => FloatingOrigin.Shifted += OnOriginShifted;
 
     private void Awake()
     {
@@ -113,11 +125,12 @@ public sealed class TimeWarp : MonoBehaviour
     {
         if (!OnRails) return;
         if (!rocket.Launched) { if (railsBodyActive) railsBodyActive = false; return; } // pad: clock only
+        if (MoonBody.Instance != null && MoonBody.Instance.Landed) { railsBodyActive = false; return; } // on the Moon: clock only
         if (!railsBodyActive) EnterRails();
         // Throttle up or anything else that needs physics: drop out of warp.
         var reason = flight.Crashed || rocket.EngineEnabled || flight.SolidBurning ? "Time warp stopped: engines lit." : null;
         if (reason != null) { Stop(reason); return; }
-        Propagate(Mathf.Min(Time.deltaTime, MaxRealStep) * Rate);
+        Propagate(Time.deltaTime * Rate);
     }
 
     private void Stop(string reason)
@@ -128,14 +141,110 @@ public sealed class TimeWarp : MonoBehaviour
 
     // Moves the rocket dt seconds along its orbit. The orbit is inertial;
     // the scene is fixed to the turning Earth, so convert there and back.
+    /// <summary>
+    /// Points along the path the last rails steps covered (world positions,
+    /// oldest first), for TrajectoryDisplay's flown-path trail. At ×100,000 a
+    /// frame spans whole orbits, so a trail of one point per frame would join
+    /// points orbits apart with straight lines; these fill the path in.
+    /// TrajectoryDisplay takes them (and clears the list) every frame.
+    /// </summary>
+    public static readonly System.Collections.Generic.List<Vector3> RailsPath = new();
+    // Points along the path per orbit (one every 4°), and at most this many per frame.
+    private const int PathPointsPerOrbit = 90, MaxPathPoints = 720;
+
+    // Adds the point at inertial position r, t seconds into this frame's
+    // step, to RailsPath. How: the trail is fixed to the ground, and the
+    // ground has turned by spin × t since the step began, so the inertial
+    // position is turned back by that angle (the same RotateAboutY the final
+    // placement uses) and converted to world units from Earth's centre.
+    private void AddPathPoint(Vector3d r, double t, Double3 centre)
+    {
+        if (RailsPath.Count >= MaxPathPoints) return;
+        var ground = r.RotateAboutY(-planet.RotationRate * t);
+        RailsPath.Add((centre + ground.ToDouble3() * PlanetBody.WorldUnitsPerMeter).ToVector3());
+    }
+
+    // Keeps waiting path points in step when the floating origin moves the world.
+    private void OnOriginShifted(Vector3 offset)
+    {
+        for (var i = 0; i < RailsPath.Count; i++) RailsPath[i] += offset;
+    }
+
     private void Propagate(double dt)
     {
-        var centre = planet.transform.position;
-        var r0 = new Vector3d((transform.position - centre) / PlanetBody.WorldUnitsPerMeter);
+        var centre = FloatingOrigin.PlanetCentre;
+        var r0 = new Vector3d((new Double3(transform.position) - centre) / PlanetBody.WorldUnitsPerMeter);
         var spin = new Vector3d(planet.SpinVector);
         var v0 = groundVelocity + Vector3d.Cross(spin, r0);
         var mu = PlanetBody.UniversalGravitationalConstant * planet.Mass;
-        Kepler(r0, v0, dt, mu, out var r1, out var v1);
+        Vector3d r1, v1;
+        string stop = null;
+        var sol = SolarSystem.Instance;
+        var moon = MoonBody.Instance;
+        if (sol != null && moon != null && (r0.Length > MoonPathFrom || moon.RocketNear))
+        {
+            // Earth and Moon together. The clock may already have moved on
+            // this frame; the Moon's path starts where the rocket's does.
+            var start = sol.DateAt(Time.time - Time.deltaTime);
+            // The Moon's path sampled finely enough for the step (every 30 s
+            // at ×1000; coarser when a frame covers days at the top speeds).
+            var track = new EarthMoonDynamics.MoonTrack(start, sol.RotationAngleAt(start), dt + 60, Math.Max(30, (dt + 60) / 400));
+            var r = r0.ToDouble3(); var v = v0.ToDouble3();
+            var t = 0.0;
+            // Trail points: at most one per 1/90 of this path's local orbital
+            // period, taken at the integrator's own steps.
+            var nextPoint = 0.0;
+            while (t < dt)
+            {
+                var h = Math.Min(EarthMoonDynamics.SuggestedStep(r, v, track.Position(t), track.Velocity(t), mu, planet.Radius), dt - t);
+                EarthMoonDynamics.Step(ref r, ref v, t, h, track, mu);
+                t += h;
+                if (t >= nextPoint && t < dt)
+                {
+                    AddPathPoint(new Vector3d(r), t, centre);
+                    nextPoint = t + 2 * Math.PI * Math.Sqrt(Math.Pow(r.Length, 3) / mu) / PathPointsPerOrbit;
+                }
+                if (EarthMoonDynamics.MoonAltitude(r, track.Position(t)) < MoonStopAltitude)
+                { stop = "Time warp stopped: approaching the Moon's surface."; break; }
+                if (r.Length - planet.Radius < AtmosphereTop && Double3.Dot(r, v) < 0)
+                { stop = "Time warp stopped: entering the atmosphere."; break; }
+            }
+            dt = t;
+            r1 = new Vector3d(r); v1 = new Vector3d(v);
+        }
+        else if (PeriapsisRadius(r0, v0, mu) < planet.Radius + AtmosphereTop)
+        {
+            // The orbit dips into the air: at the top speeds one frame can
+            // span whole orbits, so step through and stop where it comes in.
+            r1 = r0; v1 = v0;
+            var t = 0.0;
+            while (t < dt)
+            {
+                var h = Math.Min(20, dt - t);
+                Kepler(r1, v1, h, mu, out r1, out v1);
+                t += h;
+                if (t < dt) AddPathPoint(r1, t, centre);
+                if (r1.Length - planet.Radius < AtmosphereTop && Vector3d.Dot(r1, v1) < 0)
+                { stop = "Time warp stopped: entering the atmosphere."; break; }
+            }
+            dt = t;
+        }
+        else
+        {
+            Kepler(r0, v0, dt, mu, out r1, out v1);
+            // Trail points along the way: the step split into pieces of
+            // 1/90 orbit (or 60 s on an escape path), each point found by
+            // Kepler propagation from the step's start to that moment.
+            var alpha = 2 / r0.Length - Vector3d.Dot(v0, v0) / mu;   // 1/a
+            var piece = alpha > 0 ? 2 * Math.PI * Math.Sqrt(1 / (alpha * alpha * alpha) / mu) / PathPointsPerOrbit : 60;
+            var pieces = (int)Math.Min(MaxPathPoints, Math.Ceiling(dt / piece));
+            for (var k = 1; k < pieces; k++)
+            {
+                var t = dt * k / pieces;
+                Kepler(r0, v0, t, mu, out var rk, out _);
+                AddPathPoint(rk, t, centre);
+            }
+        }
 
         // Earth turned eastward by spin × dt meanwhile: in its frame, the
         // inertial result sits that much further west - and so does the
@@ -145,20 +254,17 @@ public sealed class TimeWarp : MonoBehaviour
         v1 = v1.RotateAboutY(turn);
         var ground = v1 - Vector3d.Cross(spin, r1);
 
-        if (r1.Length - planet.Radius < AtmosphereTop && Vector3d.Dot(r1, v1) < 0)
-        {
-            // About to dip into the air: stop here and hand back to physics.
-            Place(r1, ground, turn, centre);
-            Stop("Time warp stopped: entering the atmosphere.");
-            return;
-        }
+        if (stop == null && r1.Length - planet.Radius < AtmosphereTop && Vector3d.Dot(r1, v1) < 0)
+            stop = "Time warp stopped: entering the atmosphere.";
         Place(r1, ground, turn, centre);
+        if (stop != null) Stop(stop);
     }
 
-    private void Place(Vector3d r, Vector3d ground, double turn, Vector3 centre)
+    private void Place(Vector3d r, Vector3d ground, double turn, Double3 centre)
     {
         groundVelocity = ground;
-        var position = centre + r.ToVector3() * PlanetBody.WorldUnitsPerMeter;
+        // From Earth's centre in double precision (FloatingOrigin).
+        var position = (centre + r.ToDouble3() * PlanetBody.WorldUnitsPerMeter).ToVector3();
         body.position = position;
         transform.position = position;
         transform.rotation = Quaternion.AngleAxis((float)(-turn * Mathf.Rad2Deg), planet.transform.up) * transform.rotation;
@@ -172,6 +278,13 @@ public sealed class TimeWarp : MonoBehaviour
         var r0m = r0.Length;
         var vr0 = Vector3d.Dot(r0, v0) / r0m;
         var alpha = 2 / r0m - Vector3d.Dot(v0, v0) / mu;
+        // A closed orbit repeats every period: at the top warp speeds a frame
+        // can span many, so propagate only the part of a revolution left.
+        if (alpha > 0)
+        {
+            var period = 2 * Math.PI * Math.Sqrt(1 / (alpha * alpha * alpha) / mu);
+            dt %= period;
+        }
         var sqrtMu = Math.Sqrt(mu);
         var chi = sqrtMu * Math.Abs(alpha) * dt;
         for (var i = 0; i < 60; i++)
@@ -195,6 +308,14 @@ public sealed class TimeWarp : MonoBehaviour
         v = r0 * fDot + v0 * gDot;
     }
 
+    private static double PeriapsisRadius(Vector3d r, Vector3d v, double mu)
+    {
+        var h = Vector3d.Cross(r, v);
+        var hh = Vector3d.Dot(h, h);
+        var e = Vector3d.Cross(v, h) * (1 / mu) - r * (1 / r.Length);
+        return hh / mu / (1 + e.Length);
+    }
+
     private static void Stumpff(double z, out double c, out double s)
     {
         if (z > 1e-8) { var q = Math.Sqrt(z); s = (q - Math.Sin(q)) / (q * q * q); c = (1 - Math.Cos(q)) / z; }
@@ -202,7 +323,7 @@ public sealed class TimeWarp : MonoBehaviour
         else { s = 1.0 / 6; c = .5; }
     }
 
-    private void OnDisable() { LeaveRails(); Rate = 1; Time.timeScale = 1; }
+    private void OnDisable() { LeaveRails(); Rate = 1; Time.timeScale = 1; FloatingOrigin.Shifted -= OnOriginShifted; }
 
     // Double-precision vector for metre-scale orbit maths.
     private readonly struct Vector3d
@@ -210,6 +331,8 @@ public sealed class TimeWarp : MonoBehaviour
         public readonly double x, y, z;
         public Vector3d(double x, double y, double z) { this.x = x; this.y = y; this.z = z; }
         public Vector3d(Vector3 v) { x = v.x; y = v.y; z = v.z; }
+        public Vector3d(Double3 v) { x = v.x; y = v.y; z = v.z; }
+        public Double3 ToDouble3() => new(x, y, z);
         public double Length => Math.Sqrt(x * x + y * y + z * z);
         public Vector3 ToVector3() => new((float)x, (float)y, (float)z);
         // Adds 'angle' to the longitude (x toward z), as PlanetBody's frame does.
