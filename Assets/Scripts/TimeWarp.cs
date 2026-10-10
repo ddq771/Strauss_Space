@@ -53,8 +53,6 @@ public sealed class TimeWarp : MonoBehaviour
             if (model.GetComponent<TimeWarp>() == null) model.gameObject.AddComponent<TimeWarp>();
     }
 
-    private void OnEnable() => FloatingOrigin.Shifted += OnOriginShifted;
-
     private void Awake()
     {
         instance = this;
@@ -142,37 +140,44 @@ public sealed class TimeWarp : MonoBehaviour
     // Moves the rocket dt seconds along its orbit. The orbit is inertial;
     // the scene is fixed to the turning Earth, so convert there and back.
     /// <summary>
-    /// Points along the path the last rails steps covered (world positions,
-    /// oldest first), for TrajectoryDisplay's flown-path trail. At ×100,000 a
-    /// frame spans whole orbits, so a trail of one point per frame would join
-    /// points orbits apart with straight lines; these fill the path in.
-    /// TrajectoryDisplay takes them (and clears the list) every frame.
+    /// Points along the path the last rails steps covered (oldest first), for
+    /// TrajectoryDisplay's flown-path trail, as star-fixed samples (see
+    /// TrajectoryDisplay.PathSample) so the trail can draw them in any frame.
+    /// At ×100,000 a frame spans whole orbits, so a trail of one point per
+    /// frame would join points orbits apart with straight lines; these fill
+    /// the path in. TrajectoryDisplay takes them (and clears the list) every frame.
     /// </summary>
-    public static readonly System.Collections.Generic.List<Vector3> RailsPath = new();
+    public static readonly System.Collections.Generic.List<TrajectoryDisplay.PathSample> RailsPath = new();
+    // This frame's step: its start date and Earth's rotation angle then.
+    private DateTime stepStart;
+    private double stepTheta;
     // Points along the path per orbit (one every 4°), and at most this many per frame.
     private const int PathPointsPerOrbit = 90, MaxPathPoints = 720;
 
-    // Adds the point at inertial position r, t seconds into this frame's
-    // step, to RailsPath. How: the trail is fixed to the ground, and the
-    // ground has turned by spin × t since the step began, so the inertial
-    // position is turned back by that angle (the same RotateAboutY the final
-    // placement uses) and converted to world units from Earth's centre.
+    // Adds the point at position r, t seconds into this frame's step, to
+    // RailsPath. How: r is in axes fixed among the stars that matched the
+    // scene's at the step's start, when Earth's rotation angle was
+    // stepTheta; turning it by that angle gives the star-fixed axes the trail
+    // stores (those of rotation angle 0). Earth's angle at the point is
+    // stepTheta + spin × t, and the Moon's position comes from the ephemeris
+    // at that moment.
     private void AddPathPoint(Vector3d r, double t, Double3 centre)
     {
         if (RailsPath.Count >= MaxPathPoints) return;
-        var ground = r.RotateAboutY(-planet.RotationRate * t);
-        RailsPath.Add((centre + ground.ToDouble3() * PlanetBody.WorldUnitsPerMeter).ToVector3());
-    }
-
-    // Keeps waiting path points in step when the floating origin moves the world.
-    private void OnOriginShifted(Vector3 offset)
-    {
-        for (var i = 0; i < RailsPath.Count; i++) RailsPath[i] += offset;
+        var moon = SolarSystem.Instance != null && MoonBody.Instance != null ? MoonBody.OffsetFromEarth(stepStart.AddSeconds(t), 0) : default;
+        RailsPath.Add(new TrajectoryDisplay.PathSample(r.RotateAboutY(stepTheta).ToDouble3(), stepTheta + planet.RotationRate * t, moon));
     }
 
     private void Propagate(double dt)
     {
         var centre = FloatingOrigin.PlanetCentre;
+        // When this step began (for the trail's samples): the date one frame
+        // ago and Earth's rotation angle then.
+        if (SolarSystem.Instance != null)
+        {
+            stepStart = SolarSystem.Instance.DateAt(Time.time - Time.deltaTime);
+            stepTheta = SolarSystem.Instance.RotationAngleAt(stepStart);
+        }
         var r0 = new Vector3d((new Double3(transform.position) - centre) / PlanetBody.WorldUnitsPerMeter);
         var spin = new Vector3d(planet.SpinVector);
         var v0 = groundVelocity + Vector3d.Cross(spin, r0);
@@ -323,7 +328,7 @@ public sealed class TimeWarp : MonoBehaviour
         else { s = 1.0 / 6; c = .5; }
     }
 
-    private void OnDisable() { LeaveRails(); Rate = 1; Time.timeScale = 1; FloatingOrigin.Shifted -= OnOriginShifted; }
+    private void OnDisable() { LeaveRails(); Rate = 1; Time.timeScale = 1; }
 
     // Double-precision vector for metre-scale orbit maths.
     private readonly struct Vector3d

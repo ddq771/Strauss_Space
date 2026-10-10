@@ -17,6 +17,22 @@ public sealed class AssemblyViewCamera : MonoBehaviour
     [SerializeField, HideInInspector] private List<Renderer> localSiteRenderers = new List<Renderer>();
     [SerializeField, HideInInspector] private bool localSiteHidden;
     private Vector3 flightFocusOffset;
+    // The surface frame the camera's view is defined in ("Kenya Surface
+    // Frame", 0.001-scaled, so its units are metres): its pitch, yaw and
+    // focus are all relative to it. The camera used to be its child, but a
+    // child's position is stored in its parent's space - metres from the
+    // launch site, millions of them once in orbit, where a float resolves
+    // only ~0.5 m - and even a world-space placement was rounded to that,
+    // which shook the view. So the camera is taken out of the hierarchy
+    // (DetachFromFrame) and keeps the frame here: its pose is worked out in
+    // the frame's space as before, then set in world space, near the origin
+    // where it's precise.
+    private Transform frame;
+    // While following a launched rocket: the world-space point the camera
+    // looks at (its centre of mass plus any panning), set each frame.
+    private bool followingFlight;
+    private bool rocketLaunched;   // set in ApplyPose: the map may centre on the Moon only in flight
+    private Vector3 flightFocusWorld;
     private bool zoomInitialized;
     private Rocket trackedRocket;
     private GUIStyle rocketMarkerStyle;
@@ -46,6 +62,18 @@ public sealed class AssemblyViewCamera : MonoBehaviour
         foreach (var camera in FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None))
             camera.eventMask = 0;
     }
+
+    // Called first thing (Awake): remembers the scene parent as the frame and
+    // unparents the camera, keeping its world pose. Root objects are also
+    // moved by FloatingOrigin, like the frame, so the two stay in step.
+    private void DetachFromFrame()
+    {
+        if (frame != null || transform.parent == null) return;
+        frame = transform.parent;
+        transform.SetParent(null, true);
+    }
+
+    private void Awake() => DetachFromFrame();
 
     private void Start()
     {
@@ -115,7 +143,7 @@ public sealed class AssemblyViewCamera : MonoBehaviour
         if (Mathf.Abs(distance-desiredDistance) < Mathf.Max(.01f,desiredDistance*.0001f))
             distance=desiredDistance;
         var rocket=FindFirstObjectByType<Rocket>();
-        if(rocket!=null && rocket.Launched && distance<1000000f && transform.parent!=null)
+        if(rocket!=null && rocket.Launched && distance<1000000f && frame!=null)
         {
             // Follow the vehicle's centre of mass - the point it really turns
             // about - plus any panning the pilot has added (flightFocusOffset,
@@ -126,10 +154,14 @@ public sealed class AssemblyViewCamera : MonoBehaviour
             // its engine. The centre of mass moves to the stage still flying.
             var body=rocket.GetComponent<Rigidbody>();
             var centre=body!=null?body.worldCenterOfMass:rocket.transform.position;
-            target=transform.parent.InverseTransformPoint(centre);
-            target+=transform.parent.InverseTransformVector(
-                rocket.transform.TransformVector(flightFocusOffset*PlanetBody.WorldUnitsPerMeter));
+            // The focus in world space, kept for ApplyPose to place the camera
+            // from directly (see there); 'target' (the same point in the
+            // surface frame) still serves everything else.
+            flightFocusWorld=centre+rocket.transform.TransformVector(flightFocusOffset*PlanetBody.WorldUnitsPerMeter);
+            followingFlight=true;
+            target=frame.InverseTransformPoint(flightFocusWorld);
         }
+        else followingFlight=false;
         ApplyPose();
     }
 
@@ -212,11 +244,11 @@ public sealed class AssemblyViewCamera : MonoBehaviour
 
     private void PanFocus(Vector2 mouseDelta)
     {
-        if (mouseDelta.sqrMagnitude<.0001f || transform.parent==null) return;
+        if (mouseDelta.sqrMagnitude<.0001f || frame==null) return;
         var metresPerInput=Mathf.Clamp(desiredDistance*.015f,.25f,30f);
         var worldDelta=(transform.right*mouseDelta.x+transform.up*mouseDelta.y)*
             (metresPerInput*PlanetBody.WorldUnitsPerMeter);
-        target+=transform.parent.InverseTransformVector(worldDelta);
+        target+=frame.InverseTransformVector(worldDelta);
         var rocket=FindFirstObjectByType<Rocket>();
         if (rocket!=null && rocket.Launched)
         {
@@ -229,7 +261,7 @@ public sealed class AssemblyViewCamera : MonoBehaviour
     public float MapBlend => OrbitalBlend(distance);
     /// <summary>0 = centred on Earth, 1 = solar system view centred on the Sun.</summary>
     public float SolarBlend =>
-        planet != null && transform.parent != null && SolarSystem.Instance != null
+        planet != null && frame != null && SolarSystem.Instance != null
             ? Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(SolarStart, SolarFull, distance)) : 0f;
 
     // Map view turns with the stars, not with Earth: Earth spins underneath
@@ -240,7 +272,7 @@ public sealed class AssemblyViewCamera : MonoBehaviour
     // 0 = close-up camera around the site/rocket, 1 = map view around Earth,
     // eased so the hand-over between the two has no visible kink.
     private float OrbitalBlend(float atDistance) =>
-        planet != null && transform.parent != null
+        planet != null && frame != null
             ? Mathf.SmoothStep(0f, 1f, Mathf.InverseLerp(MapStart, MapFull, atDistance)) : 0f;
 
     public void ApplyPose()
@@ -249,8 +281,8 @@ public sealed class AssemblyViewCamera : MonoBehaviour
         var orbitalBlend = OrbitalBlend(distance);
         var rotation = Quaternion.Euler(pitch, yaw, 0f);
         var focus = target;
-        var scale = transform.parent != null ? transform.parent.lossyScale.x : 1f;
-        if (planet != null && transform.parent != null)
+        var scale = frame != null ? frame.lossyScale.x : 1f;
+        if (planet != null && frame != null)
         {
 
             // distance is the camera's zoom/orbit distance from its focus
@@ -264,6 +296,7 @@ public sealed class AssemblyViewCamera : MonoBehaviour
             // leaving it even at a tight camera zoom.
             var groundProximity = distance;
             var trackedRocket = FindFirstObjectByType<Rocket>();
+            rocketLaunched = trackedRocket != null && trackedRocket.Launched;
             if (trackedRocket != null && trackedRocket.Launched)
             {
                 var flightModel = trackedRocket.GetComponent<RocketFlightModel>();
@@ -327,11 +360,46 @@ public sealed class AssemblyViewCamera : MonoBehaviour
             if (localGround != null) localGround.enabled = !undersideInspection;
             if (assemblyPlatform != null) assemblyPlatform.enabled = !undersideInspection;
         }
-        transform.localPosition = focus - rotation * Vector3.forward * distance;
-        transform.localRotation = rotation;
+        if (followingFlight && frame != null)
+        {
+            // Following a launched rocket: place the camera in world space,
+            // straight from the rocket's centre of mass. Going through the
+            // surface frame's local space (metres from the launch site, a
+            // child of a 0.001-scaled frame) meant coordinates of millions
+            // of metres once in orbit, where a float resolves only ~0.5 m -
+            // the camera's offset from the rocket snapped about by that much
+            // every frame, which read as violent shaking that grew the
+            // further the rocket went. How: the orientation is the same as
+            // before (the view's pitch/yaw rotation within the surface
+            // frame, turned into world axes by the frame's rotation); the
+            // position is the world focus point - near the origin, so
+            // precise to millimetres - backed off along the view direction
+            // by the zoom distance converted to world units (× the frame's
+            // 0.001 scale).
+            transform.rotation = frame.rotation * rotation;
+            transform.position = flightFocusWorld - transform.rotation * Vector3.forward * (distance * scale);
+        }
+        else if (frame != null)
+        {
+            // The same pose as before, worked out in the surface frame's
+            // space (metres) and turned into world space.
+            transform.SetPositionAndRotation(frame.TransformPoint(focus - rotation * Vector3.forward * distance), frame.rotation * rotation);
+        }
+        else
+        {
+            transform.localPosition = focus - rotation * Vector3.forward * distance;
+            transform.localRotation = rotation;
+        }
         if (orbitalBlend > 0f)
         {
-            var center = planet.transform.position;
+            // The map orbits Earth - or the Moon, while the rocket is inside
+            // its sphere of influence (MoonBody.RocketNear), so a lunar orbit
+            // or descent fills the map instead of being a speck by a distant
+            // Earth. Its radius sets how far out the map camera sits.
+            var moon = MoonBody.Instance;
+            var atMoon = moon != null && moon.RocketNear && rocketLaunched;
+            var center = atMoon ? moon.WorldPosition : planet.transform.position;
+            var bodyRadius = atMoon ? (float)MoonBody.RadiusMeters : planet.Radius;
             // Entering map view: start the orbit directly above where the
             // close-up camera already is, so zooming out has no jump.
             if (previousOrbitalBlend <= 0f)
@@ -347,7 +415,7 @@ public sealed class AssemblyViewCamera : MonoBehaviour
             // so it can go over the poles without flipping.
             var orbit = Quaternion.Euler(mapPitch, mapYaw + InertialYawOffset, 0f);
             var mapPosition = center + orbit * Vector3.back *
-                (planet.Radius * PlanetBody.WorldUnitsPerMeter + distance * scale);
+                (bodyRadius * PlanetBody.WorldUnitsPerMeter + distance * scale);
             var mapRotation = Quaternion.LookRotation(center - mapPosition, orbit * Vector3.up);
             transform.SetPositionAndRotation(
                 Vector3.Lerp(transform.position, mapPosition, orbitalBlend),
@@ -373,7 +441,7 @@ public sealed class AssemblyViewCamera : MonoBehaviour
         // Nothing sits between the camera and the ground, so push the near
         // clip out toward the surface - capped by the focus distance so a
         // tracked rocket close to the camera is never clipped.
-        if (planet != null && transform.parent != null)
+        if (planet != null && frame != null)
         {
             var camera = GetComponent<Camera>();
             var surfaceDistance = Vector3.Distance(transform.position, planet.transform.position) -
@@ -409,7 +477,7 @@ public sealed class AssemblyViewCamera : MonoBehaviour
     public void ShowRocket()
     {
         var rocket = FindFirstObjectByType<Rocket>();
-        if (rocket == null || transform.parent == null) return;
+        if (rocket == null || frame == null) return;
         // In flight the view centres on the vehicle's centre of mass (see the
         // follow code in Update), so no panning offset; on the pad, the
         // centre of the stack.
@@ -418,7 +486,7 @@ public sealed class AssemblyViewCamera : MonoBehaviour
         var centre = rocket.Launched && body != null
             ? body.worldCenterOfMass
             : rocket.transform.TransformPoint(Vector3.up * ((rocket.ActiveBottom + rocket.ActiveTop) * .5f - rocket.TotalHeight * .5f) * PlanetBody.WorldUnitsPerMeter);
-        target = transform.parent.InverseTransformPoint(centre);
+        target = frame.InverseTransformPoint(centre);
         desiredDistance = Mathf.Max(40f, rocket.ActiveHeight * 2.4f);
     }
 
@@ -441,7 +509,7 @@ public sealed class AssemblyViewCamera : MonoBehaviour
 
     public void FocusAssemblyPart(Vector3 worldPosition, float spanMeters)
     {
-        target = transform.parent != null ? transform.parent.InverseTransformPoint(worldPosition) : worldPosition;
+        target = frame != null ? frame.InverseTransformPoint(worldPosition) : worldPosition;
         distance = Mathf.Clamp(spanMeters * 2.6f, 12f, 3000f);
         desiredDistance = distance;
         ApplyPose();

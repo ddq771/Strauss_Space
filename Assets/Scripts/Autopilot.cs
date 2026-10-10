@@ -176,7 +176,7 @@ public sealed class Autopilot : MonoBehaviour
         fallbackClock = 0;
         moonTrack = destination == Destination.Moon
             ? new EarthMoonDynamics.MoonTrack(origin, SolarSystem.Instance.RotationAngleAt(origin), 12 * 86400) : null;
-        planned = burning = false; replanAt = -1; kickCount = -1;
+        planned = burning = false; replanAt = -1; kickCount = -1; lateCorrections = 0; lateCorrection = false;
         predictedMax = destination == Destination.MaxOrbit ? PredictMaxOrbit(out _) : -1;
         assembly.EngageSas();
         assembly.SetAutoStaging(true);
@@ -1619,7 +1619,11 @@ public sealed class Autopilot : MonoBehaviour
         var passAltitude = current.distance - MoonBody.RadiusMeters;
         var tolerance = step == Step.Mcc1 ? 10000 : 25000;
         var when = step == Step.Mcc1 ? correctionFrom + 2 * 3600 : current.time - 12 * 3600;
-        if (Math.Abs(passAltitude - LunarPassAltitude) < tolerance || current.time - Math.Max(when, t0) < 3 * 3600)
+        // A late correction (sent back here by PlanLoi): as soon as the turn
+        // allows, and allowed down to half an hour before the pass.
+        var minimumLead = 3 * 3600.0;
+        if (lateCorrection) { when = t0 + TurnLead + 60; minimumLead = 1800; lateCorrection = false; }
+        if (Math.Abs(passAltitude - LunarPassAltitude) < tolerance || current.time - Math.Max(when, t0) < minimumLead)
         {
             Advance();
             return false;
@@ -1642,6 +1646,8 @@ public sealed class Autopilot : MonoBehaviour
     }
 
     private double correctionFrom;   // when translunar injection ended
+    private bool lateCorrection;      // the next correction is a late one, from PlanLoi
+    private int lateCorrections;      // how many of those have been flown
 
     // Lunar orbit insertion. How: predicts the pass; misses and impacts end
     // the mission; while it's more than 3 h away it coasts and plans again
@@ -1656,7 +1662,22 @@ public sealed class Autopilot : MonoBehaviour
         var t0 = Now;
         var pass = ClosestApproach(rI, vI, t0, t0 + 8 * 86400);
         if (pass.time < 0 || pass.distance > MoonBody.SphereOfInfluence) { Finish("Missed the Moon"); return false; }
-        if (pass.distance < MoonBody.RadiusMeters) { Fail("on course to hit the Moon."); return false; }
+        // Headed into the surface (or skimming it): small errors in the last
+        // correction can do that. With time left, fly one more correction
+        // straight away (step back to Mcc2 with lateCorrection set, which
+        // lets it plan as little as half an hour before the pass), then
+        // plan this again; only out of time or tries does the mission stop.
+        if (pass.distance < MoonBody.RadiusMeters + 50000)
+        {
+            if (lateCorrections < 2 && pass.time - t0 > TurnLead + 1800)
+            {
+                lateCorrections++; lateCorrection = true;
+                step = Step.Mcc2;
+                Status = "Pass too low (" + TrajectoryDisplay.Km(pass.distance - MoonBody.RadiusMeters) + ") - one more course correction";
+                return false;
+            }
+            if (pass.distance < MoonBody.RadiusMeters) { Fail("on course to hit the Moon."); return false; }
+        }
         Status = "Coasting to the Moon · pass at " + TrajectoryDisplay.Km(pass.distance - MoonBody.RadiusMeters) + " in " + TrajectoryDisplay.Clock(pass.time - t0);
         // Planned again an hour or two out, where the pass is known best.
         if (pass.time - t0 > 3 * 3600) { replanAt = pass.time - 2 * 3600; return false; }

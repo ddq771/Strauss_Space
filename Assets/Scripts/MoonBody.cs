@@ -77,7 +77,9 @@ public sealed class MoonBody : MonoBehaviour
     private Rigidbody rocketBody;
     private Rocket rocket;
     private LineRenderer orbitLine;
-    private const int OrbitSamples = 240;
+    // Points along the drawn month-long path: 1,440 (one every ~1,700 km),
+    // so it still looks smooth with the camera at the Moon, on the line.
+    private const int OrbitSamples = 1440;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void Create()
@@ -398,8 +400,15 @@ public sealed class MoonBody : MonoBehaviour
             if (dist / 1000 < perigeeKm) { perigeeKm = dist / 1000; perigeePoint = point; }
             if (dist / 1000 > apogeeKm) { apogeeKm = dist / 1000; apogeePoint = point; }
         }
+        // About 1.5 px wide where the line is nearest the camera: the width
+        // scales with the distance to the closest sample, not to Earth's
+        // centre - viewed from the Moon (on the line itself, ~384,000 km from
+        // Earth) that drew a band hundreds of km wide across the view.
         var camera = view.GetComponent<Camera>();
-        orbitLine.widthMultiplier = Vector3.Distance(camera.transform.position, centre) * .0012f;
+        var nearest = float.MaxValue;
+        for (var i = 0; i < OrbitSamples; i++)
+            nearest = Mathf.Min(nearest, Vector3.Distance(camera.transform.position, orbitLine.GetPosition(i)));
+        orbitLine.widthMultiplier = nearest * .0012f;
     }
 
     /// <summary>

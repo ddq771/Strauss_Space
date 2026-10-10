@@ -51,12 +51,42 @@ public sealed class TrajectoryDisplay : MonoBehaviour
     private const double MoonPathSeconds = 10 * 86400;
     private const int MoonPathMaxSteps = 20000;
 
+    /// <summary>
+    /// One point of the flown path, kept so it can be drawn in any of the
+    /// display frames: the position fixed among the stars (m from Earth's
+    /// centre, in the axes the scene has at Earth rotation angle 0), Earth's
+    /// rotation angle then (to put it back on the turning ground) and the
+    /// Moon's position then (same axes, to draw it relative to the Moon).
+    /// </summary>
+    public readonly struct PathSample
+    {
+        public readonly Double3 Inertial, Moon;
+        public readonly double Theta;
+        public PathSample(Double3 inertial, double theta, Double3 moon) { Inertial = inertial; Theta = theta; Moon = moon; }
+    }
+
+    /// <summary>
+    /// Which way the paths are drawn, so the predicted path and the flown
+    /// trail always agree:
+    ///  * Ground - fixed to the turning Earth: a suborbital hop, landing
+    ///    where the impact marker is;
+    ///  * Inertial - fixed among the stars: an orbit looks like an orbit
+    ///    (drawn on the turning ground it winds into a spiral), and a path to
+    ///    the Moon meets it where the Moon will be;
+    ///  * Moon - relative to the Moon, while the rocket is inside its sphere
+    ///    of influence: orbits and descents read as they do there.
+    /// </summary>
+    public enum Frame { Ground, Inertial, Moon }
+    public Frame DisplayFrame { get; private set; } = Frame.Ground;
+
     private Rocket rocket;
     private RocketFlightModel flight;
     private Rigidbody body;
     private PlanetBody planet;
     private LineRenderer predicted, trail;
-    private readonly List<Vector3> trailPoints = new();
+    private readonly List<PathSample> trailPoints = new();
+    private Vector3[] trailPositions = new Vector3[0];
+    private LineRenderer ghostMoon;   // the Moon where it will be at the encounter
     private readonly List<Vector3> points = new();
     private float nextTrailTime;
     private Camera viewCamera;
@@ -103,13 +133,16 @@ public sealed class TrajectoryDisplay : MonoBehaviour
         planet = FindFirstObjectByType<PlanetBody>();
         predicted = MakeLine("Predicted Trajectory", new Color(.35f, .85f, 1f, .95f));
         trail = MakeLine("Flown Path", new Color(1f, .62f, .2f, .85f));
+        ghostMoon = MakeLine("Moon at Encounter", new Color(.8f, .8f, .9f, .6f));
+        ghostMoon.loop = true;
         FloatingOrigin.Shifted += OnOriginShifted;
     }
 
     // The flown path is kept in world positions: move it with the world.
     private void OnOriginShifted(Vector3 offset)
     {
-        for (var i = 0; i < trailPoints.Count; i++) trailPoints[i] += offset;
+        // The flown path is stored fixed among the stars and redrawn from
+        // Earth's (double-precision) centre every frame, so nothing to move.
     }
 
     private static LineRenderer MakeLine(string name, Color color)
@@ -132,6 +165,7 @@ public sealed class TrajectoryDisplay : MonoBehaviour
         FloatingOrigin.Shifted -= OnOriginShifted;
         if (predicted != null) Destroy(predicted.gameObject);
         if (trail != null) Destroy(trail.gameObject);
+        if (ghostMoon != null) Destroy(ghostMoon.gameObject);
     }
 
     private void LateUpdate()
@@ -146,6 +180,7 @@ public sealed class TrajectoryDisplay : MonoBehaviour
 
         RecordTrail();
         Solve();
+        DrawTrail();   // after Solve, which picks the display frame
 
         // Keep the lines about a pixel or two wide at any zoom, from the pad
         // to the map: scale with the camera's distance to the rocket only.
@@ -163,6 +198,47 @@ public sealed class TrajectoryDisplay : MonoBehaviour
         MoonEncounter = false; WillImpactMoon = false; TimeToMoonPeriapsis = TimeToMoonImpact = -1;
         TimeToApoapsis = TimeToImpact = OrbitalPeriod = -1;
         predicted.positionCount = 0;
+        if (ghostMoon != null) ghostMoon.positionCount = 0;
+    }
+
+    // Earth's rotation angle now (rad) and the Moon's position now (m, axes
+    // at rotation 0) - the two things that turn stored samples into scene
+    // positions. Zero without a SolarSystem / Moon.
+    private static double ThetaNow => SolarSystem.Instance != null ? SolarSystem.Instance.RotationAngleRad : 0;
+    private static Double3 MoonNowInertial =>
+        SolarSystem.Instance != null && MoonBody.Instance != null ? MoonBody.OffsetFromEarth(SolarSystem.Instance.Date, 0) : default;
+
+    /// <summary>
+    /// The current position as a sample. How: the position from Earth's
+    /// centre in scene axes, turned by Earth's rotation angle into the
+    /// star-fixed axes (scene = inertial turned by −θ, so inertial = scene
+    /// turned by +θ), with θ and the Moon's position at this moment.
+    /// </summary>
+    private PathSample SampleNow()
+    {
+        var scene = (new Double3(transform.position) - FloatingOrigin.PlanetCentre) / PlanetBody.WorldUnitsPerMeter;
+        var theta = ThetaNow;
+        return new PathSample(scene.RotateAboutY(theta), theta, MoonNowInertial);
+    }
+
+    /// <summary>
+    /// Where a sample is drawn now (world position), in the display frame.
+    /// How: Ground - turned back by Earth's angle when it was recorded (where
+    /// it was over the ground); Inertial - turned by today's angle (the same
+    /// star-fixed point, seen from today's scene axes); Moon - its offset from
+    /// the Moon then, added to the Moon's position now, then as Inertial. The
+    /// scene position (m) is scaled to world units from Earth's centre.
+    /// </summary>
+    private Vector3 Draw(PathSample sample, Frame frame, double thetaNow, Double3 moonNow)
+    {
+        Double3 scene;
+        switch (frame)
+        {
+            case Frame.Ground: scene = sample.Inertial.RotateAboutY(-sample.Theta); break;
+            case Frame.Moon: scene = (sample.Inertial - sample.Moon + moonNow).RotateAboutY(-thetaNow); break;
+            default: scene = sample.Inertial.RotateAboutY(-thetaNow); break;
+        }
+        return (FloatingOrigin.PlanetCentre + scene * PlanetBody.WorldUnitsPerMeter).ToVector3();
     }
 
     private void RecordTrail()
@@ -172,25 +248,35 @@ public sealed class TrajectoryDisplay : MonoBehaviour
         // orbits, the trail follows the curve instead of jumping across it.
         if (TimeWarp.RailsPath.Count > 0)
         {
-            if (trailPoints.Count > 0)
-            {
-                trailPoints.AddRange(TimeWarp.RailsPath);
-                // Over the limit: drop the oldest in one go (removing them one
-                // at a time would shift the whole list for each).
-                var excess = trailPoints.Count - (TrailMax - 1);
-                if (excess > 0) trailPoints.RemoveRange(0, excess);
-            }
+            if (trailPoints.Count > 0) trailPoints.AddRange(TimeWarp.RailsPath);
             TimeWarp.RailsPath.Clear();
             nextTrailTime = 0;   // and the current position straight after
         }
-        if (Time.time < nextTrailTime && trailPoints.Count > 0) return;
-        if (trailPoints.Count == 0 && flight.Speed < 1) return;   // still on the pad
-        nextTrailTime = Time.time + TrailInterval;
-        if (trailPoints.Count >= TrailMax) trailPoints.RemoveAt(0);
-        trailPoints.Add(transform.position);
-        trail.positionCount = trailPoints.Count + 1;
-        for (var i = 0; i < trailPoints.Count; i++) trail.SetPosition(i, trailPoints[i]);
-        trail.SetPosition(trailPoints.Count, transform.position);
+        if (Time.time >= nextTrailTime || trailPoints.Count == 0)
+        {
+            if (trailPoints.Count == 0 && flight.Speed < 1) return;   // still on the pad
+            nextTrailTime = Time.time + TrailInterval;
+            trailPoints.Add(SampleNow());
+        }
+        // Over the limit: drop the oldest in one go (removing them one at a
+        // time would shift the whole list for each).
+        var excess = trailPoints.Count - TrailMax;
+        if (excess > 0) trailPoints.RemoveRange(0, excess);
+    }
+
+    // Redraws the whole flown path in the display frame every frame - the
+    // frame can change (e.g. on entering the Moon's sphere of influence),
+    // and the star-fixed and Moon frames move relative to the scene - ending
+    // at the rocket itself.
+    private void DrawTrail()
+    {
+        var count = trailPoints.Count + 1;
+        if (trailPositions.Length < count) trailPositions = new Vector3[Mathf.Max(count, trailPositions.Length * 2)];
+        var theta = ThetaNow; var moonNow = MoonNowInertial;
+        for (var i = 0; i < trailPoints.Count; i++) trailPositions[i] = Draw(trailPoints[i], DisplayFrame, theta, moonNow);
+        trailPositions[count - 1] = transform.position;
+        trail.positionCount = count;
+        trail.SetPositions(trailPositions);
     }
 
     // --- Prediction -------------------------------------------------------------
@@ -227,7 +313,7 @@ public sealed class TrajectoryDisplay : MonoBehaviour
         points.Add(transform.position);
         WillImpact = false; TimeToImpact = -1;
         MoonEncounter = false; WillImpactMoon = false; TimeToMoonPeriapsis = TimeToMoonImpact = -1;
-        MoonPeriapsisAltitude = double.PositiveInfinity;
+        MoonPeriapsisAltitude = double.PositiveInfinity; ghostAt = -1;
         // Out toward the Moon, or near it: Earth and Moon together.
         var moon = MoonBody.Instance; var sol = SolarSystem.Instance;
         var viaMoon = moon != null && sol != null &&
@@ -237,6 +323,11 @@ public sealed class TrajectoryDisplay : MonoBehaviour
             moonTrack = new EarthMoonDynamics.MoonTrack(sol.Date, sol.RotationAngleRad, MoonPathSeconds, 1800);
             moonNow = moonTrack.Position(0);
         }
+        // The display frame (see Frame): relative to the Moon inside its
+        // sphere of influence; fixed among the stars for an orbit, an escape
+        // or a path out to the Moon; otherwise fixed to the ground.
+        DisplayFrame = moon != null && moon.RocketNear ? Frame.Moon
+            : viaMoon || Escaping || (PeriapsisAltitude > AtmosphereTop) ? Frame.Inertial : Frame.Ground;
         var t = 0.0;
         var maxAlt = r.Length - radius; var maxAltT = 0.0; var maxAltPoint = r;
         var climbing = Vec.Dot(r, v) > 0;
@@ -270,6 +361,30 @@ public sealed class TrajectoryDisplay : MonoBehaviour
 
         predicted.positionCount = points.Count;
         predicted.SetPositions(points.ToArray());
+        DrawGhostMoon();
+    }
+
+    // The Moon where it will be at the closest approach, as a circle of its
+    // real radius - only when the path is drawn fixed among the stars (in the
+    // Moon's frame the Moon itself is there). How: the Moon's tabulated
+    // position at that time, in this solve's star-fixed axes (= today's scene
+    // axes), and 64 points round it in the plane facing the camera (two axes
+    // across the view direction).
+    private void DrawGhostMoon()
+    {
+        if (DisplayFrame != Frame.Inertial || ghostAt < 0 || moonTrack == null || viewCamera == null) { ghostMoon.positionCount = 0; return; }
+        var centreWorld = World(moonTrack.Position(ghostAt));
+        var toCamera = (viewCamera.transform.position - centreWorld).normalized;
+        var across = Vector3.Cross(toCamera, Mathf.Abs(toCamera.y) < .9f ? Vector3.up : Vector3.right).normalized;
+        var up = Vector3.Cross(across, toCamera);
+        var r = (float)(MoonBody.RadiusMeters * PlanetBody.WorldUnitsPerMeter);
+        ghostMoon.positionCount = 64;
+        for (var i = 0; i < 64; i++)
+        {
+            var a = i * Mathf.PI * 2 / 64;
+            ghostMoon.SetPosition(i, centreWorld + (across * Mathf.Cos(a) + up * Mathf.Sin(a)) * r);
+        }
+        ghostMoon.widthMultiplier = predicted.widthMultiplier;
     }
 
     // RK4 through the atmosphere with gravity + drag. Returns true when the
@@ -336,6 +451,13 @@ public sealed class TrajectoryDisplay : MonoBehaviour
         {
             var rm = moonTrack.Position(t);
             var h = EarthMoonDynamics.SuggestedStep(rd, vd, rm, moonTrack.Velocity(t), mu, radius);
+            // Near the Moon, steps short enough that the path turns no more
+            // than ~2° about it per step (time = 0.035 rad × distance / speed
+            // relative to the Moon), so an orbit or a low arc over it is drawn
+            // as a smooth curve, not a polygon of 100 km chords.
+            var aroundMoon = rd - rm;
+            if (aroundMoon.Length < MoonBody.SphereOfInfluence)
+                h = Math.Min(h, Math.Max(1, .035 * aroundMoon.Length / Math.Max(1, (vd - moonTrack.Velocity(t)).Length)));
             var previous = rd; var previousT = t;
             EarthMoonDynamics.Step(ref rd, ref vd, t, h, moonTrack, mu);
             t += h;
@@ -349,7 +471,8 @@ public sealed class TrajectoryDisplay : MonoBehaviour
                 if (moonAltitude < MoonPeriapsisAltitude)
                 {
                     MoonPeriapsisAltitude = moonAltitude; TimeToMoonPeriapsis = t;
-                    moonPeWorld = MoonWorld(fromMoon);
+                    moonPeWorld = PathPoint(rd, t);
+                    ghostAt = t;
                 }
             }
             if (moonAltitude <= 0)
@@ -359,7 +482,7 @@ public sealed class TrajectoryDisplay : MonoBehaviour
                 var f = previousAltitude / Math.Max(1e-9, previousAltitude - moonAltitude);
                 var hitT = previousT + (t - previousT) * f;
                 var hit = previous + (rd - previous) * f - moonTrack.Position(hitT);
-                moonImpactWorld = MoonWorld(hit);
+                moonImpactWorld = PathPoint(previous + (rd - previous) * f, hitT);
                 points.Add(moonImpactWorld);
                 WillImpactMoon = true; TimeToMoonImpact = hitT;
                 TimeToMoonPeriapsis = -1;
@@ -372,16 +495,26 @@ public sealed class TrajectoryDisplay : MonoBehaviour
                 return false;
             }
             if (rd.Length > 2e9) break;
-            // Inside the Moon's sphere: drawn round the Moon as it is now.
-            if (near != lastNear || (rd - lastDrawn).Length > (near ? 20000 : 500000) || step % 50 == 0)
+            // A point at least every 500 km (or 50 steps) far out; near the
+            // Moon at every step, which there are kept to ~2° of arc (below).
+            if (near || near != lastNear || (rd - lastDrawn).Length > 500000 || step % 50 == 0)
             {
-                points.Add(near ? MoonWorld(fromMoon) : World(rd));
+                points.Add(PathPoint(rd, t));
                 lastDrawn = rd; lastNear = near;
             }
         }
         if (MoonEncounter && TimeToMoonPeriapsis >= 0 && double.IsInfinity(MoonPeriapsisAltitude)) TimeToMoonPeriapsis = -1;
         return true;
     }
+
+    // A point of the Moon path (m from Earth's centre, star-fixed axes of
+    // this solve, t seconds ahead) where it's drawn in the display frame:
+    // relative to the Moon - its offset from the Moon then, around the Moon
+    // now - or fixed among the stars as it is (the encounter then appears
+    // where the Moon will be, marked by the ghost Moon).
+    private Vector3 PathPoint(Double3 rd, double t) =>
+        DisplayFrame == Frame.Moon ? MoonWorld(rd - moonTrack.Position(t)) : World(rd);
+    private double ghostAt = -1;   // time ahead (s) of the closest approach, for the ghost Moon
 
     // A point (m) relative to the Moon's centre, drawn where the Moon is now.
     private Vector3 MoonWorld(Double3 fromMoon) => (centre + (moonNow + fromMoon) * PlanetBody.WorldUnitsPerMeter).ToVector3();
@@ -473,6 +606,8 @@ public sealed class TrajectoryDisplay : MonoBehaviour
         if (MoonEncounter && !WillImpactMoon && TimeToMoonPeriapsis > 0)
             Marker(moonPeWorld, "Moon Pe " + Km(MoonPeriapsisAltitude) + "  T−" + Clock(TimeToMoonPeriapsis), grey);
         if (WillImpactMoon) Marker(moonImpactWorld, "Moon impact  T−" + Clock(TimeToMoonImpact), new Color(1f, .45f, .35f));
+        if (ghostMoon != null && ghostMoon.positionCount > 0)
+            Marker(ghostMoon.GetPosition(16), "Moon at encounter", grey);
     }
 
     private void Marker(Vector3 world, string text, Color color)
