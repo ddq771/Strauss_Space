@@ -48,7 +48,8 @@ public sealed class TrajectoryDisplay : MonoBehaviour
     // Line width as a fraction of camera distance: ~1.5 px at 1080p.
     private const float WidthPerDistance = .0012f;
     private const double MoonPathFrom = 50e6;               // m from Earth's centre
-    private const double MoonPathSeconds = 10 * 86400;
+    private const double MoonPathSeconds = 10 * 86400;      // shortest look-ahead on the Moon path
+    private const double MoonPathMaxSeconds = 60 * 86400;   // longest (one orbit, capped)
     private const int MoonPathMaxSteps = 20000;
 
     /// <summary>
@@ -314,13 +315,22 @@ public sealed class TrajectoryDisplay : MonoBehaviour
         WillImpact = false; TimeToImpact = -1;
         MoonEncounter = false; WillImpactMoon = false; TimeToMoonPeriapsis = TimeToMoonImpact = -1;
         MoonPeriapsisAltitude = double.PositiveInfinity; ghostAt = -1;
+        pathApT = -1;
         // Out toward the Moon, or near it: Earth and Moon together.
         var moon = MoonBody.Instance; var sol = SolarSystem.Instance;
         var viaMoon = moon != null && sol != null &&
             (Escaping || now.a * (1 + now.e) > MoonPathFrom || r.Length > MoonPathFrom || moon.RocketNear);
         if (viaMoon)
         {
-            moonTrack = new EarthMoonDynamics.MoonTrack(sol.Date, sol.RotationAngleRad, MoonPathSeconds, 1800);
+            // How far ahead to follow it: one whole orbit (+5 %, so the path
+            // closes on itself and the next Ap/Pe is on it) from the two-body
+            // period, never less than MoonPathSeconds (Moon transfers need
+            // that long to arrive) and at most MoonPathMaxSeconds (an escape
+            // or a near-escape orbit has a huge or no period). The Moon's
+            // positions are tabulated for that same span.
+            moonPathSpan = Escaping ? MoonPathSeconds
+                : Math.Min(MoonPathMaxSeconds, Math.Max(MoonPathSeconds, OrbitalPeriod * 1.05));
+            moonTrack = new EarthMoonDynamics.MoonTrack(sol.Date, sol.RotationAngleRad, moonPathSpan, 1800);
             moonNow = moonTrack.Position(0);
         }
         // The display frame (see Frame): relative to the Moon inside its
@@ -343,7 +353,22 @@ public sealed class TrajectoryDisplay : MonoBehaviour
 
         // Ap: the highest point ahead on the predicted path - or, for a closed
         // orbit clear of the air, the orbit's own apoapsis.
-        if (Escaping || viaMoon) { ApoapsisAltitude = Escaping ? double.PositiveInfinity : now.p / (1 - now.e) - radius; showAp = false; TimeToApoapsis = -1; }
+        if (Escaping) { ApoapsisAltitude = double.PositiveInfinity; showAp = false; TimeToApoapsis = -1; }
+        else if (viaMoon)
+        {
+            // A high orbit, integrated with the Moon's pull (FollowMoonPath):
+            // its apoapsis is the first turning point on that path - where
+            // the distance from Earth stops rising - not the two-body
+            // ellipse's, which the Moon shifts. None found within the
+            // predicted window (or only near the Moon): fall back to the
+            // ellipse's value for the readout, without a marker.
+            if (pathApT > 0)
+            {
+                ApoapsisAltitude = pathApAlt; apWorld = pathApWorld;
+                TimeToApoapsis = pathApT; showAp = true;
+            }
+            else { ApoapsisAltitude = now.p / (1 - now.e) - radius; showAp = false; TimeToApoapsis = -1; }
+        }
         else if (InOrbit)
         {
             ApoapsisAltitude = now.p / (1 - now.e) - radius;
@@ -447,7 +472,11 @@ public sealed class TrajectoryDisplay : MonoBehaviour
         var rd = new Double3(r.x, r.y, r.z); var vd = new Double3(v.x, v.y, v.z);
         var start = t;
         var lastDrawn = rd; var lastNear = false;
-        for (var step = 0; step < MoonPathMaxSteps && t - start < MoonPathSeconds; step++)
+        // Apoapsis search: the radial speed's sign is r·v (positive = moving
+        // away from Earth). Remember it each step; the step where it flips
+        // from + to − straddles the highest point.
+        var wasRising = Double3.Dot(rd, vd) > 0;
+        for (var step = 0; step < MoonPathMaxSteps && t - start < moonPathSpan; step++)
         {
             var rm = moonTrack.Position(t);
             var h = EarthMoonDynamics.SuggestedStep(rd, vd, rm, moonTrack.Velocity(t), mu, radius);
@@ -464,6 +493,21 @@ public sealed class TrajectoryDisplay : MonoBehaviour
             rm = moonTrack.Position(t);
             var fromMoon = rd - rm;
             var near = fromMoon.Length < MoonBody.SphereOfInfluence;
+            // First turning point away from the Moon = the apoapsis ahead.
+            // Of the two step ends, the farther one is taken (steps here are
+            // a few minutes against an orbit of days, so it's within a few km
+            // of the true top). Inside the Moon's sphere of influence the
+            // distance from Earth is ruled by the Moon, so it isn't an
+            // Earth apoapsis and is skipped.
+            var rising = Double3.Dot(rd, vd) > 0;
+            if (wasRising && !rising && pathApT < 0 && !near)
+            {
+                var top = rd.Length >= previous.Length ? rd : previous;
+                var topT = rd.Length >= previous.Length ? t : previousT;
+                pathApAlt = top.Length - radius; pathApT = topT;
+                pathApWorld = PathPoint(top, topT);
+            }
+            wasRising = rising;
             var moonAltitude = fromMoon.Length - MoonBody.RadiusMeters;
             if (near)
             {
@@ -514,7 +558,12 @@ public sealed class TrajectoryDisplay : MonoBehaviour
     // where the Moon will be, marked by the ghost Moon).
     private Vector3 PathPoint(Double3 rd, double t) =>
         DisplayFrame == Frame.Moon ? MoonWorld(rd - moonTrack.Position(t)) : World(rd);
+    private double moonPathSpan = MoonPathSeconds;   // this solve's look-ahead (s), see Solve
     private double ghostAt = -1;   // time ahead (s) of the closest approach, for the ghost Moon
+    // The apoapsis found on the Moon path: altitude (m), time ahead (s; -1 =
+    // none found) and where it is drawn.
+    private double pathApAlt, pathApT = -1;
+    private Vector3 pathApWorld;
 
     // A point (m) relative to the Moon's centre, drawn where the Moon is now.
     private Vector3 MoonWorld(Double3 fromMoon) => (centre + (moonNow + fromMoon) * PlanetBody.WorldUnitsPerMeter).ToVector3();

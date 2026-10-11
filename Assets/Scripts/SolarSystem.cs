@@ -25,13 +25,16 @@ using UnityEngine;
 /// view, the Sun (true size, true distance) and Earth's orbit are drawn too.
 /// Rendering at 1 AU is fine - only the rocket's physics needs the
 /// precision near the origin.
-/// Sun's gravity on the rocket is left out: in Earth's free-falling frame it
-/// only acts as a tide of ~10⁻⁶ m/s² near Earth.
+/// Sun's gravity on the rocket: the scene is centred on Earth, which is
+/// itself falling around the Sun, so only the tide acts - the Sun's pull on
+/// the rocket minus its pull on Earth (FixedUpdate). ~10⁻⁶ m/s² in low
+/// orbit, but it grows with distance from Earth and reshapes orbits out
+/// toward the Moon and beyond.
 /// </summary>
 public sealed class SolarSystem : MonoBehaviour
 {
     public const double AstronomicalUnit = 1.495978707e11;   // m
-    private const double SunGravitationalParameter = 1.32712440018e20; // m³/s²
+    public const double SunGravitationalParameter = 1.32712440018e20; // m³/s²
     private const double SunRadius = 6.957e8;                 // m
     // Earth's orbital elements (J2000, Meeus / Astronomical Almanac).
     private const double SemiMajorAxisAu = 1.00000261;
@@ -98,6 +101,55 @@ public sealed class SolarSystem : MonoBehaviour
     }
 
     private void Start() => Initialize();
+
+    /// <summary>
+    /// The Sun's centre relative to Earth's (m), in the scene's axes at Earth
+    /// rotation angle 'rotation' - the same frame as MoonBody.OffsetFromEarth.
+    /// How: SunEquatorial gives the Sun's right ascension α, declination δ
+    /// and distance d; the equatorial vector d·(cos δ cos α, cos δ sin α,
+    /// sin δ) is turned into the scene like EquatorialToScene does - its
+    /// longitude measured from the scene's axes (α − rotation), north (z)
+    /// becoming the scene's +Y.
+    /// </summary>
+    public static Double3 SunOffsetFromEarth(DateTime date, double rotation)
+    {
+        SunEquatorial(date, out var rightAscension, out var declination, out var distance);
+        var lon = rightAscension - rotation;
+        var h = Math.Cos(declination) * distance;   // length in the equator's plane
+        return new Double3(h * Math.Cos(lon), Math.Sin(declination) * distance, h * Math.Sin(lon));
+    }
+
+    private Rocket rocket;
+    private Rigidbody rocketBody;
+    private RocketFlightModel rocketFlight;
+
+    // The Sun's tide on the rocket each physics step, as MoonBody does for the
+    // Moon. How: r = rocket's centre of mass from Earth's centre (m, from the
+    // world position via the floating origin's double-precision Earth
+    // centre), r_s = the Sun's offset at this physics step's date; the
+    // acceleration is EarthMoonDynamics.Tide(r, r_s, μ_sun) =
+    // μ·((r_s − r)/|r_s − r|³ − r_s/|r_s|³), applied as an acceleration
+    // (scaled to world units). Skipped before launch, after a crash, and
+    // while the rocket is kinematic (on rails warp, which integrates the
+    // same tide itself, or landed on the Moon).
+    private void FixedUpdate()
+    {
+        if (planet == null || Date == default) return;
+        if (rocket == null)
+        {
+            rocket = FindFirstObjectByType<Rocket>();
+            if (rocket == null) return;
+            rocketBody = rocket.GetComponent<Rigidbody>();
+            rocketFlight = rocket.GetComponent<RocketFlightModel>();
+        }
+        if (rocketBody == null || !rocket.Launched || rocketBody.isKinematic || (rocketFlight != null && rocketFlight.Crashed)) return;
+        var u = PlanetBody.WorldUnitsPerMeter;
+        var r = (new Double3(rocketBody.worldCenterOfMass) - FloatingOrigin.PlanetCentre) / u;
+        var date = DateAt(Time.time);
+        var sunNow = SunOffsetFromEarth(date, RotationAngleAt(date));
+        var a = EarthMoonDynamics.Tide(r, sunNow, SunGravitationalParameter);
+        rocketBody.AddForce((a * u).ToVector3(), ForceMode.Acceleration);
+    }
 
     // Also re-run after a script reload during Play mode: Unity restores the
     // old component's saved fields (so 'initialized' can come back true) but

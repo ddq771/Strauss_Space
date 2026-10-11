@@ -1481,15 +1481,15 @@ public sealed class Autopilot : MonoBehaviour
         return ClosestApproach(r, v, t, tMax);
     }
 
-    // One RK4 step of h seconds under gravity (Earth + the Moon's tidal
-    // pull) plus a constant thrust acceleration 'push'. How: classic
+    // One RK4 step of h seconds under gravity (Earth + the Moon's and the
+    // Sun's tidal pulls) plus a constant thrust acceleration 'push'. How: classic
     // fourth-order Runge-Kutta - the slope (velocity, acceleration) is
     // sampled at the start, twice at the midpoint and at the end, and the
     // step uses their weighted average (1, 2, 2, 1)/6; the Moon's position
     // for each sample comes from its table at that sample's time.
     private void ThrustStep(ref Double3 r, ref Double3 v, double t, double h, Double3 push)
     {
-        Double3 A(Double3 rr, double tt) => EarthMoonDynamics.Acceleration(rr, moonTrack.Position(tt), mu) + push;
+        Double3 A(Double3 rr, double tt) => EarthMoonDynamics.Acceleration(rr, moonTrack.Position(tt), moonTrack.SunPosition(tt), mu) + push;
         var k1r = v; var k1v = A(r, t);
         var k2r = v + k1v * (h / 2); var k2v = A(r + k1r * (h / 2), t + h / 2);
         var k3r = v + k2v * (h / 2); var k3v = A(r + k2r * (h / 2), t + h / 2);

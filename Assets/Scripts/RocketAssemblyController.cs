@@ -335,7 +335,8 @@ public sealed class RocketAssemblyController : MonoBehaviour
         "Δv = Isp·g0·ln(m0 / m1)\n\n"+
         "<b>Gravity</b>\n"+
         "Earth g = G·M / r²\n"+
-        "Moon (tidal) a = μ_M·(r_m − r) / |r_m − r|³ − μ_M·r_m / |r_m|³\n\n"+
+        "Moon (tidal) a = μ_M·(r_m − r) / |r_m − r|³ − μ_M·r_m / |r_m|³\n"+
+        "Sun (tidal) a = μ_S·(r_s − r) / |r_s − r|³ − μ_S·r_s / |r_s|³\n\n"+
         "<b>Rotating Earth</b>\n"+
         "a = −2ω × v − ω × (ω × r), ω = 2π / 86164.09 s\n"+
         "Orbital speed = |v + ω × r|\n\n"+
