@@ -42,9 +42,12 @@ using UnityEngine;
 /// rocket can reach (its Δv by the rocket equation, less a typical ~9.6 km/s
 /// to reach low orbit, less Earth's spin it gets for free). In flight it
 /// parks in low orbit, measures the Δv really left, keeps a reserve, and
-/// takes a Hohmann transfer to the highest circular orbit that affords (up
-/// to 100,000 km): a prograde burn to raise the high point, a coast half an
-/// orbit, a prograde burn there to circularise.
+/// takes a Hohmann transfer to the highest circular orbit that affords: a
+/// prograde burn to raise the high point, a coast half an orbit, a prograde
+/// burn there to circularise. The ceiling is not the rocket but the Moon:
+/// above ~200,000 km from Earth's centre its pull (and the Sun's) breaks a
+/// circular orbit up (see StableOrbitRadius), so a rocket with Δv to spare
+/// stops there and says how much it has left.
 ///
 /// Moon: on the pad it searches the next day for a launch time (the launch
 /// window) and fast-forwards the clock to it; the parking orbit's plane is
@@ -79,7 +82,15 @@ public sealed class Autopilot : MonoBehaviour
     private enum Cutoff { ApoapsisAbove, PeriapsisAbove, Energy, DeltaV, MoonCircular }
 
     private const double ParkingAltitude = 200000;          // m
-    private const double MaxOrbitAltitude = 100_000_000;    // m - beyond, the Moon's pull takes over
+    // The highest circular Earth orbit that stays one (m from Earth's
+    // centre). Found by simulating circular, prograde orbits for 180 days
+    // under Earth + the Moon + the Sun (the forces this game applies), from
+    // several starting Moon and Sun positions: at 150,000 km the radius
+    // stays within ±1 %, at 200,000 km ±4 %, at 220,000 km ±10 %, at 250,000
+    // km it swings 136,000-310,000 km, and anywhere above the Moon (550,000-
+    // 750,000 km) it is thrown out to millions of km or passes within 2,000
+    // km of the Moon. So ~52 % of the Moon's distance is the ceiling.
+    private const double StableOrbitRadius = 200_000_000;
     private const double LunarPassAltitude = 150000;        // m above the Moon's surface
     private const double DeltaVReserve = .05;               // held back for finite-burn and steering losses
     private const double VerticalRise = 250;                // m before pitching over
@@ -942,9 +953,26 @@ public sealed class Autopilot : MonoBehaviour
                 return true;
             }
             case Step.Circularize:
+            {
+                // A high transfer takes days to coast up, and the Moon and
+                // Sun shift when it gets to the top by minutes to an hour -
+                // TimeToApoapsis, worked out from the present Earth-only
+                // ellipse, can't know that. So while the top is more than 3 h
+                // away, don't commit: coast, and plan again 2 h before the
+                // predicted top (Maneuver waits for replanAt, time-warping).
+                // By then the ellipse fitted to the motion is the one it will
+                // really follow over the top.
+                var ta = TimeToApoapsis(r, v);
+                if (ta > 3 * 3600)
+                {
+                    replanAt = Now + ta - 2 * 3600;
+                    Status = "Coasting up to " + TrajectoryDisplay.Km(orbitTarget);
+                    return false;
+                }
                 ApoapsisBurn(r, v, thrust, isp, orbitTarget);
                 Status = "Raising orbit to " + TrajectoryDisplay.Km(orbitTarget);
                 return true;
+            }
             case Step.Tli: return PlanTli(r, v, thrust, isp);
             case Step.Mcc1:
             case Step.Mcc2: return PlanCorrection(r, v, thrust, isp);
@@ -1048,16 +1076,27 @@ public sealed class Autopilot : MonoBehaviour
     }
 
     // Radius of the highest circular orbit a Hohmann transfer from circular
-    // radius r1 reaches with 'budget' m/s. How: a Hohmann transfer's Δv rises
-    // steadily with the target height over this range (up to
-    // MaxOrbitAltitude), so a bisection works: try halfway between the
-    // highest known-affordable and lowest known-too-dear radius, keep the
-    // half that brackets the budget, 60 times (far below a metre).
+    // radius r1 reaches with 'budget' m/s, no higher than StableOrbitRadius.
+    // How: a Hohmann transfer's total Δv is NOT steadily rising with the
+    // target radius r2. It rises to a peak at r2 ≈ 15.58·r1 (~102,000 km from
+    // a 200 km orbit, costing 0.536·v1 ≈ 4.2 km/s) and then FALLS again
+    // toward (√2 − 1)·v1 for a very distant target - far out, the second
+    // burn needed to stay there gets tiny. So:
+    //  1. if the ceiling itself is affordable, that's the answer - even when
+    //     some orbit in between would cost more;
+    //  2. otherwise every radius from the peak up to the ceiling costs at
+    //     least what the ceiling does (the falling side), i.e. too much, so
+    //     the answer lies on the rising side, between r1 and the peak (or the
+    //     ceiling, if that comes first) - where Δv does rise steadily, so a
+    //     bisection works: try halfway between the highest known-affordable
+    //     and lowest known-too-dear radius, keep the half that brackets the
+    //     budget, 60 times (far below a metre).
     private double HighestCircular(double r1, double budget)
     {
-        if (budget <= 0) return r1;
-        double lo = r1, hi = radius + MaxOrbitAltitude;
-        if (Hohmann(r1, hi) <= budget) return hi;
+        var ceiling = StableOrbitRadius;
+        if (budget <= 0 || r1 >= ceiling) return r1;
+        if (Hohmann(r1, ceiling) <= budget) return ceiling;
+        double lo = r1, hi = Math.Min(ceiling, HohmannPeakRatio * r1);
         for (var i = 0; i < 60; i++)
         {
             var mid = (lo + hi) / 2;
@@ -1065,6 +1104,10 @@ public sealed class Autopilot : MonoBehaviour
         }
         return lo;
     }
+
+    // r2/r1 at which a Hohmann transfer's total Δv peaks: the real root of
+    // x³ − 15x² − 9x − 1 = 0 (from setting d(Δv)/d(r2) = 0).
+    private const double HohmannPeakRatio = 15.58172;
 
     // Δv a launch typically spends reaching low orbit: 7.8 km/s of orbital
     // speed plus ~1.8 km/s lost to gravity, drag and steering on the way up
@@ -1152,8 +1195,13 @@ public sealed class Autopilot : MonoBehaviour
         burnDuration = BurnTime(deltaVPlanned, thrust, isp);
         burnStart = Now + TurnLead;
         steer = Steer.Prograde; cutoff = Cutoff.ApoapsisAbove; cutoffValue = orbitTarget;
-        Status = "Raising orbit to " + TrajectoryDisplay.Km(orbitTarget) + " - the maximum with the " + RemainingDeltaV().ToString("N0") +
-                 " m/s measured in orbit" + (predictedMax > 0 ? " (predicted before launch: " + TrajectoryDisplay.Km(predictedMax) + ")" : "");
+        // At the ceiling the Δv isn't the limit: say how much is spare (the
+        // budget less the whole transfer's cost, both burns).
+        var limitedByMoon = lo >= StableOrbitRadius - 1;
+        Status = "Raising orbit to " + TrajectoryDisplay.Km(orbitTarget) + (limitedByMoon
+                     ? " - the highest stable Earth orbit (the Moon breaks up any higher); " + (budget - Hohmann(r1, lo)).ToString("N0") + " m/s to spare"
+                     : " - the maximum with the " + RemainingDeltaV().ToString("N0") + " m/s measured in orbit") +
+                 (predictedMax > 0 ? " (predicted before launch: " + TrajectoryDisplay.Km(predictedMax) + ")" : "");
         return true;
     }
 
@@ -1732,7 +1780,7 @@ public sealed class Autopilot : MonoBehaviour
             var max = PredictMaxOrbit(out var deltaV);
             prediction = "Δv " + deltaV.ToString("N0") + " m/s · " + (max < 0
                 ? (rocket.Launched ? "max orbit: once in orbit" : "can't reach orbit")
-                : "max orbit ≈ " + TrajectoryDisplay.Km(max) + (max >= MaxOrbitAltitude - 1 ? " (cap)" : ""));
+                : "max orbit ≈ " + TrajectoryDisplay.Km(max) + (max + radius >= StableOrbitRadius - 1 ? " (stability limit - the Moon)" : ""));
         }
         if (!Engaged && prediction != null) GUILayout.Label(prediction, boxText);
         if (!string.IsNullOrEmpty(Status)) GUILayout.Label(Status, boxText);

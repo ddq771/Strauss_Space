@@ -243,8 +243,9 @@ public sealed class RocketAssemblyController : MonoBehaviour
         GUILayout.Label("Shift/Ctrl: throttle up/down. Z: full throttle. X: cut throttle. Space: toggle ignition. G: stage. W/S/A/D: pitch/yaw. T: SAS. R: re-entry attitude (the attitude the heat shield was built for). H: heat-zone map.",new GUIStyle(GUI.skin.label){wordWrap=true});
         GUILayout.Label(new GUIContent(sasEnabled?"SAS: on - keys set turn rate, release to hold attitude":"SAS: off - keys deflect the engines directly",
             "The flight computer steers by gimballing the engines (each within its real range and speed). No control with the engines off."));
-        var reentryOn=GUILayout.Toggle(reentryAttitude,new GUIContent(" Re-entry attitude (R)","Engines off: RCS turns the vehicle to the attitude its heat shield was built for - the orbiter at 40° angle of attack, the Ship belly-first at 65°, a booster engines-first - and holds it there."));
+        var reentryOn=GUILayout.Toggle(reentryAttitude,new GUIContent(" Re-entry attitude (R)","SAS turns the vehicle to the attitude its heat shield was built for - the orbiter at 40° angle of attack, the Ship belly-first at 65°, a booster engines-first - and holds it there: with RCS while coasting, with the engine gimbals under thrust (an entry burn)."));
         if(reentryOn!=reentryAttitude)SetReentryAttitude(reentryOn);
+        SasModeGUI();
         var heatingView=GetComponent<ReentryHeating>();
         if(heatingView!=null)heatingView.ShowZones=GUILayout.Toggle(heatingView.ShowZones,new GUIContent(" Heat-zone map (H)","Draws each heat-protected area on the vehicle in its own colour (bare structure striped), shading yellow then red as it nears its rating."));
         GUILayout.Label("Throttle: "+(commandedThrottle*100).ToString("F0")+"%");
@@ -716,7 +717,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         stagePromptShown=false;stageStartPropellant=-1;
         dropsDone.Clear();
         DroppedStage.ClearAll();
-        GetComponent<ReentryHeating>()?.ResetHeat();tileAxisStage=-1;reentryAttitude=false;
+        GetComponent<ReentryHeating>()?.ResetHeat();tileAxisStage=-1;reentryAttitude=false;sasDirection=SasDirection.Hold;
     }
 
     public string StageName(int index)
@@ -1086,7 +1087,10 @@ public sealed class RocketAssemblyController : MonoBehaviour
     public void SetReentryAttitude(bool on)
     {
         reentryAttitude=on;holdingAttitude=false;
-        notice=on?"Re-entry attitude: turning to "+(CurrentHeatProtection.HasShield?"the attitude the heat shield was built for":"nose-first")+" (RCS, engines off).":"Re-entry attitude off - holding attitude.";
+        // One SAS mode at a time; SAS on, since under thrust the gimbals hold
+        // the attitude only with SAS (coasting, RCS holds it either way).
+        if(on){sasDirection=SasDirection.Hold;sasEnabled=true;}
+        notice=on?"Re-entry attitude: turning to "+(CurrentHeatProtection.HasShield?"the attitude the heat shield was built for":"nose-first")+" (RCS coasting, engine gimbals under thrust).":"Re-entry attitude off - holding attitude.";
     }
 
     // The Moon: the predicted encounter, then altitude and speeds over its
@@ -1359,7 +1363,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
     public bool StagingInProgress=>separated || separationAt>=0;
     // Turns SAS on (clearing the held attitude so it re-latches) and the
     // re-entry attitude hold off, so the autopilot's attitude is what's held.
-    public void EngageSas(){if(!sasEnabled){sasEnabled=true;holdingAttitude=false;}reentryAttitude=false;}
+    public void EngageSas(){if(!sasEnabled){sasEnabled=true;holdingAttitude=false;}reentryAttitude=false;sasDirection=SasDirection.Hold;}
     // Auto-staging on: UpdateStaging then separates and lights stages on the
     // real timeline by itself.
     public void SetAutoStaging(bool on)=>autoStaging=on;
@@ -1416,7 +1420,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
     {
         if(IgnorePilotInput)return;   // tests drive pilotInput themselves
         if(Application.isFocused && !IgnorePilotInput && GUIUtility.keyboardControl==0 && Input.GetKeyDown(KeyCode.T))
-        { sasEnabled=!sasEnabled; holdingAttitude=false; }
+        { sasEnabled=!sasEnabled; holdingAttitude=false; if(!sasEnabled)sasDirection=SasDirection.Hold; }
         if(Application.isFocused && !IgnorePilotInput && GUIUtility.keyboardControl==0 && Input.GetKeyDown(KeyCode.R))
             SetReentryAttitude(!reentryAttitude);
         var input=Vector2.zero;
@@ -1484,6 +1488,151 @@ public sealed class RocketAssemblyController : MonoBehaviour
     private bool reentryAttitude;
     public bool ReentryAttitude=>reentryAttitude;
 
+    // SAS pointing modes (as in KSP's navball): instead of holding whatever
+    // attitude it had, SAS keeps the nose on a direction worked out afresh
+    // every physics step from the motion - so it follows the orbit round.
+    // Prograde/Retrograde: along/against the velocity. Normal/Anti-normal:
+    // along/against the orbit's angular momentum r × v (square to the orbit
+    // plane). Radial out/in: away from/toward the body, square to the
+    // velocity (in the orbit plane). Hold = the plain attitude hold.
+    // Re-entry (reentryAttitude, the R key) is the eighth button but kept as
+    // its own flag, since it also rolls the vehicle belly-down.
+    public enum SasDirection{Hold,Prograde,Retrograde,Normal,AntiNormal,RadialIn,RadialOut}
+    private SasDirection sasDirection;
+    public SasDirection SasPointing=>sasDirection;
+    private static readonly string[] SasModeNames={"Hold","Prograde","Retrograde","Normal","Anti-normal","Radial in","Radial out","Re-entry"};
+    // Below this altitude prograde etc. are measured against the air (the
+    // ground-relative velocity, what heating and drag see); above it against
+    // the stars (the orbital velocity). KSP switches the same way.
+    private const double SurfaceModeAltitude=70000;
+
+    /// <summary>Picks a SAS pointing mode. How: stores it, drops the latched
+    /// attitude (so the new target takes over at once), and for any mode but
+    /// Hold turns SAS on and re-entry attitude off - one mode at a time.</summary>
+    public void SetSasDirection(SasDirection mode)
+    {
+        sasDirection=mode;holdingAttitude=false;
+        if(mode!=SasDirection.Hold){sasEnabled=true;reentryAttitude=false;}
+    }
+
+    // The row of SAS mode buttons (Unity's SelectionGrid: one button per
+    // name, 4 per row, returns the index clicked - or the one passed in when
+    // nothing was). Index 7 is Re-entry, mapped onto SetReentryAttitude.
+    // Picking a mode while the autopilot flies hands control to the pilot,
+    // since the autopilot's steering would otherwise override it.
+    private void SasModeGUI()
+    {
+        var current=reentryAttitude?7:(int)sasDirection;
+        GUILayout.Label(new GUIContent("SAS mode"+(sasDirection!=SasDirection.Hold?" · "+SasReferenceName():""),
+            "Where SAS points the nose. Prograde etc. follow the motion: relative to the air below "+(SurfaceModeAltitude/1000).ToString("F0")+" km, to the stars above, and to the Moon inside its sphere of influence. Works coasting (RCS) and under thrust (engine gimbals). Any steering key returns to Hold."));
+        var picked=GUILayout.SelectionGrid(current,SasModeNames,4);
+        if(picked==current)return;
+        var autopilot=GetComponent<Autopilot>();
+        if(autopilot!=null && autopilot.Engaged)autopilot.Disengage("Off - pilot chose a SAS mode");
+        if(picked==7)SetReentryAttitude(true);
+        else{if(reentryAttitude)SetReentryAttitude(false);SetSasDirection((SasDirection)picked);}
+    }
+
+    private string SasReferenceName()=>
+        MoonBody.Instance!=null && MoonBody.Instance.RocketNear?"relative to the Moon":
+        flight.Altitude<SurfaceModeAltitude?"relative to the surface":"orbital";
+
+    /// <summary>
+    /// The attitude the current pointing mode wants (false for Hold). How:
+    ///  1. the reference body and motion - near the Moon (inside its sphere
+    ///     of influence): position from the Moon's centre and velocity minus
+    ///     the Moon's own (its ephemeris offset a second either side, at a
+    ///     fixed Earth rotation = its velocity among the stars, in today's
+    ///     scene axes); low over Earth: position from Earth's centre and the
+    ///     ground-relative velocity; higher: the same position and the
+    ///     inertial velocity = ground-relative + ω × r (Earth's spin);
+    ///  2. the direction - v, −v, n = r × v (normalised), −n, or r with its
+    ///     part along v removed (r − (r·v̂)v̂, normalised), or its negative;
+    ///  3. the attitude - the shortest turn that swings the nose (local up)
+    ///     onto that direction, applied to the present attitude, so roll is
+    ///     left alone (roll is damped separately).
+    /// </summary>
+    private PlanetBody planet;
+    private bool TryDirectionAttitude(out Quaternion attitude)
+    {
+        attitude=transform.rotation;
+        if(sasDirection==SasDirection.Hold)return false;
+        if(planet==null)planet=FindFirstObjectByType<PlanetBody>();   // looked up once, for its spin
+        if(planet==null)return false;
+        var u=PlanetBody.WorldUnitsPerMeter;
+        var position=(new Double3(transform.position)-FloatingOrigin.PlanetCentre)/u;   // m from Earth's centre
+        var ground=new Double3(flight.GroundVelocity);
+        Double3 r,v;
+        var moon=MoonBody.Instance;var sol=SolarSystem.Instance;
+        if(moon!=null && sol!=null && moon.RocketNear)
+        {
+            var date=sol.Date;var turn=sol.RotationAngleRad;
+            var moonVelocity=(MoonBody.OffsetFromEarth(date.AddSeconds(1),turn)-MoonBody.OffsetFromEarth(date.AddSeconds(-1),turn))/2;
+            r=position-MoonBody.OffsetFromEarth(date,turn);
+            v=ground+Double3.Cross(new Double3(planet.SpinVector),position)-moonVelocity;
+        }
+        else
+        {
+            r=position;
+            v=flight.Altitude<SurfaceModeAltitude?ground:ground+Double3.Cross(new Double3(planet.SpinVector),position);
+        }
+        if(v.SqrLength<1 || r.SqrLength<1)return false;   // no motion to point along
+        var along=v.Normalized;
+        Double3 direction;
+        switch(sasDirection)
+        {
+            case SasDirection.Prograde:direction=along;break;
+            case SasDirection.Retrograde:direction=-along;break;
+            case SasDirection.Normal:direction=Double3.Cross(r,v);break;
+            case SasDirection.AntiNormal:direction=-Double3.Cross(r,v);break;
+            case SasDirection.RadialOut:direction=r-along*Double3.Dot(r,along);break;
+            default:direction=-(r-along*Double3.Dot(r,along));break;   // RadialIn
+        }
+        if(direction.SqrLength<1e-12)return false;
+        attitude=Quaternion.FromToRotation(transform.up,direction.Normalized.ToVector3())*transform.rotation;
+        return true;
+    }
+
+    /// <summary>
+    /// The re-entry attitude (the side the heat shield was built for toward
+    /// the direction of motion, rolled windward side down) - false when
+    /// barely moving. How: the shield's entry direction and windward side in
+    /// the vehicle's own axes come from CurrentHeatProtection; the target
+    /// rotation is the one that carries (entry, lee side) onto (motion, up
+    /// across the motion): LookRotation(motion, up)·LookRotation(entry,
+    /// lee)⁻¹. Without a usable windward side (a booster, or flying straight
+    /// up/down) only the entry direction is swung onto the motion.
+    /// </summary>
+    private bool TryReentryAttitude(out Quaternion attitude)
+    {
+        attitude=transform.rotation;
+        var heat=CurrentHeatProtection;
+        var entry=heat.ToLocal(heat.EntryDirection);
+        var velocity=flight.GroundVelocity;
+        if(velocity.sqrMagnitude<=1)return false;
+        var motion=velocity.normalized;
+        // Rolled windward side down, so the belly meets the air
+        // below it and a lifting body's lift points up.
+        var windward=heat.ToLocal(RocketPresets.HeatZone.Windward);
+        var lee=-(windward-Vector3.Dot(windward,entry)*entry);
+        var up=flight.RadialUp;var upAcross=up-Vector3.Dot(up,motion)*motion;
+        attitude=lee.sqrMagnitude>1e-4f && upAcross.sqrMagnitude>1e-4f
+            ? Quaternion.LookRotation(motion,upAcross)*Quaternion.Inverse(Quaternion.LookRotation(entry,lee))
+            : Quaternion.FromToRotation(transform.TransformDirection(entry),motion)*transform.rotation;
+        return true;
+    }
+
+    // The attitude SAS should hold this step, by priority: the autopilot's,
+    // then the re-entry attitude, then a pointing mode; false = none of
+    // those (plain hold of the latched attitude). Used by both the coasting
+    // (RCS) and the powered (gimbal) controllers.
+    private bool TryModeAttitude(out Quaternion attitude)
+    {
+        if(AutopilotSteering){attitude=AutopilotAttitude;return true;}
+        if(reentryAttitude)return TryReentryAttitude(out attitude);
+        return TryDirectionAttitude(out attitude);
+    }
+
     public float CurrentRcs
     {
         get
@@ -1533,36 +1682,14 @@ public sealed class RocketAssemblyController : MonoBehaviour
         Vector3 alpha;
         if(input.sqrMagnitude>.0001f)
         {
-            holdingAttitude=false;reentryAttitude=false;
+            holdingAttitude=false;reentryAttitude=false;sasDirection=SasDirection.Hold;
             alpha=sasEnabled?(new Vector3(input.x,0,input.y)*SasMaxRate*Mathf.Deg2Rad-omega)*SasRateGain
                             :new Vector3(input.x,0,input.y)*limit;
         }
         else if(sasEnabled || reentryAttitude || AutopilotSteering)
         {
-            if(AutopilotSteering){holdAttitude=AutopilotAttitude;holdingAttitude=true;}
-            else if(reentryAttitude)
-            {
-                // The attitude the stage was built to enter at: that side
-                // toward the direction of motion (it meets the air first) -
-                // the orbiter's 40° angle of attack, the Ship's 65°, a
-                // booster engines-first.
-                var heat=CurrentHeatProtection;
-                var entry=heat.ToLocal(heat.EntryDirection);
-                var velocity=flight.GroundVelocity;
-                if(velocity.sqrMagnitude>1)
-                {
-                    var motion=velocity.normalized;
-                    // Rolled windward side down, so the belly meets the air
-                    // below it and a lifting body's lift points up.
-                    var windward=heat.ToLocal(RocketPresets.HeatZone.Windward);
-                    var lee=-(windward-Vector3.Dot(windward,entry)*entry);
-                    var up=flight.RadialUp;var upAcross=up-Vector3.Dot(up,motion)*motion;
-                    holdAttitude=lee.sqrMagnitude>1e-4f && upAcross.sqrMagnitude>1e-4f
-                        ? Quaternion.LookRotation(motion,upAcross)*Quaternion.Inverse(Quaternion.LookRotation(entry,lee))
-                        : Quaternion.FromToRotation(transform.TransformDirection(entry),motion)*transform.rotation;
-                    holdingAttitude=true;
-                }
-            }
+            // Autopilot / re-entry / pointing mode: their attitude, renewed every step.
+            if(TryModeAttitude(out var target)){holdAttitude=target;holdingAttitude=true;}
             if(!holdingAttitude){holdAttitude=transform.rotation;holdingAttitude=true;}
             (Quaternion.Inverse(transform.rotation)*holdAttitude).ToAngleAxis(out var angle,out var axis);
             if(angle>180)angle-=360;
@@ -1601,13 +1728,14 @@ public sealed class RocketAssemblyController : MonoBehaviour
             Vector3 alpha;
             if(input.sqrMagnitude>.0001f)
             {
-                holdingAttitude=false;
+                holdingAttitude=false;reentryAttitude=false;sasDirection=SasDirection.Hold;
                 var rate=new Vector3(input.x,0,input.y)*SasMaxRate*Mathf.Deg2Rad;
                 alpha=(rate-omega)*SasRateGain;
             }
             else
             {
-                if(AutopilotSteering){holdAttitude=AutopilotAttitude;holdingAttitude=true;}
+                // Autopilot / re-entry (an entry burn) / pointing mode, else the latched hold.
+                if(TryModeAttitude(out var target)){holdAttitude=target;holdingAttitude=true;}
                 if(!holdingAttitude){holdAttitude=transform.rotation;holdingAttitude=true;}
                 (Quaternion.Inverse(transform.rotation)*holdAttitude).ToAngleAxis(out var angle,out var axis);
                 if(angle>180)angle-=360;
