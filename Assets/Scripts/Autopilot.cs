@@ -39,8 +39,9 @@ using UnityEngine;
 /// then be picked.
 ///
 /// Maximum orbit: before launch it predicts the highest circular orbit the
-/// rocket can reach (its Δv by the rocket equation, less a typical ~9.6 km/s
-/// to reach low orbit, less Earth's spin it gets for free). In flight it
+/// rocket can reach: it simulates this rocket's whole ascent to low orbit
+/// (its real mass, payload, engines, staging and drag - SimulateAscent) to
+/// find the Δv it will have left there, and searches from that. In flight it
 /// parks in low orbit, measures the Δv really left, keeps a reserve, and
 /// takes a Hohmann transfer to the highest circular orbit that affords: a
 /// prograde burn to raise the high point, a coast half an orbit, a prograde
@@ -68,7 +69,7 @@ using UnityEngine;
 [RequireComponent(typeof(RocketAssemblyController))]
 public sealed class Autopilot : MonoBehaviour
 {
-    public enum Destination { None, LowOrbit, MaxOrbit, Moon }
+    public enum Destination { None, LowOrbit, MaxOrbit, Moon, CustomOrbit }
 
     // What the mission is doing now - a simple state machine. FixedUpdate
     // runs Ascent() while step is Ascent and Maneuver() for every later
@@ -77,11 +78,31 @@ public sealed class Autopilot : MonoBehaviour
     // what ends it (Cutoff); then it coasts (warping) until TurnLead seconds
     // before, turns to the burn direction, burns until the cutoff test
     // passes, and Advance() moves step on to the next state.
-    private enum Step { Idle, Window, Ascent, Insert, Raise, Circularize, Tli, Mcc1, Mcc2, Loi, Done, Failed }
-    private enum Steer { Prograde, MoonRetrograde, Fixed, Tli }
-    private enum Cutoff { ApoapsisAbove, PeriapsisAbove, Energy, DeltaV, MoonCircular }
+    // Lower / LowerCircularize are the downward mirror of Raise / Circularize,
+    // used only by a custom-height orbit below the present one.
+    private enum Step { Idle, Window, Ascent, Insert, Raise, Circularize, Lower, LowerCircularize, Tli, Mcc1, Mcc2, Loi, Done, Failed }
+    private enum Steer { Prograde, Retrograde, MoonRetrograde, Fixed, Tli }
+    private enum Cutoff { ApoapsisAbove, PeriapsisAbove, ApoapsisBelow, PeriapsisBelow, Energy, DeltaV, MoonCircular }
 
     private const double ParkingAltitude = 200000;          // m
+
+    // Custom orbit: the circular orbit height (m above the surface) the pilot
+    // typed into the panel. The lowest allowed is 150 km - below that the
+    // air drags an orbit down within days; the highest is the stability
+    // ceiling StableOrbitRadius (minus Earth's radius), above which the Moon
+    // breaks a circular orbit up.
+    public double CustomAltitude = 1_000_000;
+    private const double MinCustomAltitude = 150000;
+    private double MaxCustomAltitude => StableOrbitRadius - (planet != null ? planet.Radius : 6_371_000);
+
+    // The height the ascent aims for. How: normally the 200 km parking
+    // orbit; for a custom orbit lower than that, the custom height itself -
+    // the ascent guidance just steers to whatever 'target' radius it is
+    // given, so going straight there saves a transfer back down. A custom
+    // orbit above 200 km still parks at 200 km first, then raises with a
+    // Hohmann transfer (the ascent is only tuned for low targets).
+    private double AscentAltitude =>
+        Target == Destination.CustomOrbit ? Math.Min(CustomAltitude, ParkingAltitude) : ParkingAltitude;
     // The highest circular Earth orbit that stays one (m from Earth's
     // centre). Found by simulating circular, prograde orbits for 180 days
     // under Earth + the Moon + the Sun (the forces this game applies), from
@@ -180,6 +201,14 @@ public sealed class Autopilot : MonoBehaviour
         if (planet == null || flight == null || flight.Crashed) return;
         if (destination == Destination.Moon && (MoonBody.Instance == null || SolarSystem.Instance == null))
         { Fail("No Moon in this scene."); return; }
+        // A custom height outside 150 km .. the stability ceiling is refused
+        // here, before anything is reset, so a typo can't start a flight.
+        if (destination == Destination.CustomOrbit &&
+            (CustomAltitude < MinCustomAltitude || CustomAltitude > MaxCustomAltitude))
+        {
+            Fail("height must be " + TrajectoryDisplay.Km(MinCustomAltitude) + " to " + TrajectoryDisplay.Km(MaxCustomAltitude) + ".");
+            return;
+        }
         Target = destination;
         mu = PlanetBody.UniversalGravitationalConstant * planet.Mass;
         radius = planet.Radius;
@@ -188,7 +217,16 @@ public sealed class Autopilot : MonoBehaviour
         moonTrack = destination == Destination.Moon
             ? new EarthMoonDynamics.MoonTrack(origin, SolarSystem.Instance.RotationAngleAt(origin), 12 * 86400) : null;
         planned = burning = false; replanAt = -1; kickCount = -1; lateCorrections = 0; lateCorrection = false;
-        predictedMax = destination == Destination.MaxOrbit ? PredictMaxOrbit(out _) : -1;
+        predictedMax = destination == Destination.MaxOrbit || destination == Destination.CustomOrbit ? PredictMaxOrbit(out _) : -1;
+        // Custom orbit from the pad: the pre-launch simulation already says
+        // the highest circular orbit this rocket reaches (predictedMax, m
+        // altitude; −1 = it can't simulate one). If the typed height is above
+        // that, refuse now rather than strand the rocket half-way.
+        if (destination == Destination.CustomOrbit && !rocket.Launched && predictedMax > 0 && CustomAltitude > predictedMax + 1000)
+        {
+            Fail("this rocket can reach at most ≈ " + TrajectoryDisplay.Km(predictedMax) + ".");
+            return;
+        }
         assembly.EngageSas();
         assembly.SetAutoStaging(true);
 
@@ -199,6 +237,7 @@ public sealed class Autopilot : MonoBehaviour
         {
             planeNormalI = Double3.Cross(ToI(r), ToI(v)).Normalized;
             if (destination == Destination.LowOrbit) { Finish("Already in orbit: " + OrbitText(r, v)); return; }
+            if (destination == Destination.CustomOrbit) { Status = "Engaged"; StartCustomOrbit(); return; }
             step = destination == Destination.Moon ? Step.Tli : Step.Raise;
         }
         else if (!rocket.Launched && destination == Destination.Moon && (launchAt = Now + LaunchWindow(r)) > Now + 120)
@@ -604,12 +643,12 @@ public sealed class Autopilot : MonoBehaviour
         var horizontal = v - up * vz;
         var normal = ToScene(planeNormalI).Normalized;
         var along = Double3.Cross(normal, up).Normalized;
-        var target = radius + ParkingAltitude;
+        var target = radius + AscentAltitude;
         var circular = Math.Sqrt(mu / target);
 
         Elements(r, v, out var pe, out var ap, out _);
         var lastStage = assembly.StageIndex >= assembly.StageCount - 1 && !assembly.StagingInProgress;
-        var safeOrbit = pe - radius >= ParkingAltitude - 10000 || (pe - radius > 150000 && ap - radius > ParkingAltitude * 1.5);
+        var safeOrbit = pe - radius >= AscentAltitude - 10000 || (pe - radius > 150000 && ap - radius > AscentAltitude * 1.5);
         if (safeOrbit && lastStage)
         {
             SetThrottle(0);
@@ -637,7 +676,7 @@ public sealed class Autopilot : MonoBehaviour
         // up there and finish the orbit with a prograde burn - cheaper than
         // holding altitude against gravity on a weak upper stage.
         Elements(r, v, out _, out _, out var energy);
-        if (lastStage && ap - radius >= ParkingAltitude - 5000 && altitude > 120000 &&
+        if (lastStage && ap - radius >= AscentAltitude - 5000 && altitude > 120000 &&
             Math.Sqrt(Math.Max(0, 2 * (energy + mu / ap))) >= .9 * Math.Sqrt(mu / ap))
         {
             SetThrottle(0);
@@ -685,7 +724,7 @@ public sealed class Autopilot : MonoBehaviour
             var azWanted = gEff + (vzWanted - vz) / 25;
             // Never steeper than at hand-over - unless it's sinking well short
             // of orbit (a low-thrust upper stage), when it may climb harder.
-            var maxGamma = vz < 50 && altitude < .9 * ParkingAltitude ? 60 : gammaLatch;
+            var maxGamma = vz < 50 && altitude < .9 * AscentAltitude ? 60 : gammaLatch;
             if (thrustAccel > 0)
             {
                 // Not below the horizon while still well short of the target height.
@@ -718,7 +757,7 @@ public sealed class Autopilot : MonoBehaviour
         Point(direction);
         SetThrottle(1);
 
-        Status = "Ascent to " + TrajectoryDisplay.Km(ParkingAltitude) + " parking orbit";
+        Status = "Ascent to " + TrajectoryDisplay.Km(AscentAltitude) + (Target == Destination.CustomOrbit && AscentAltitude >= CustomAltitude ? " orbit" : " parking orbit");
         Detail = (closedLoop ? "Closed-loop guidance" : altitude < VerticalRise ? "Vertical rise" : "Gravity turn") +
                  " · pitch " + gamma.ToString("F0") + "° · Ap " + TrajectoryDisplay.Km(ap - radius) + " · Pe " + TrajectoryDisplay.Km(Math.Max(0, pe - radius));
     }
@@ -735,7 +774,29 @@ public sealed class Autopilot : MonoBehaviour
             Finish("In low Earth orbit: " + OrbitText(r, v) + " - pick a destination to go on");
             return;
         }
+        if (Target == Destination.CustomOrbit) { StartCustomOrbit(); return; }
         step = Target == Destination.Moon ? Step.Tli : Step.Raise;
+    }
+
+    // Custom orbit, from any Earth orbit: decide whether there's anything to
+    // do and which way. How: reads the present orbit's low and high points;
+    // if both are already within max(5 km, 1 %) of the typed height the
+    // orbit is it - done. Otherwise its mean radius (pe + ap)/2 against the
+    // target radius picks Raise (prograde Hohmann up) or Lower (retrograde
+    // Hohmann down); the step's planner works out the burns.
+    private void StartCustomOrbit()
+    {
+        planned = burning = false; replanAt = -1;
+        GetState(out var r, out var v);
+        Elements(r, v, out var pe, out var ap, out _);
+        var target = radius + CustomAltitude;
+        var tolerance = Math.Max(5000, CustomAltitude * .01);
+        if (Math.Abs(pe - target) <= tolerance && Math.Abs(ap - target) <= tolerance)
+        {
+            Finish("In a " + TrajectoryDisplay.Km(CustomAltitude) + " orbit: " + OrbitText(r, v));
+            return;
+        }
+        step = (pe + ap) / 2 < target ? Step.Raise : Step.Lower;
     }
 
     // --- Burns -------------------------------------------------------------------
@@ -818,6 +879,8 @@ public sealed class Autopilot : MonoBehaviour
     {
         switch (steer)
         {
+            case Steer.Retrograde:
+                return -v;   // against the motion: lowers the far side
             case Steer.MoonRetrograde:
                 MoonState(out _, out var vm);
                 return -(v - vm);
@@ -859,6 +922,22 @@ public sealed class Autopilot : MonoBehaviour
                 var horizontal = (v - up * Double3.Dot(v, up)).Length;
                 return pe - radius > 120000 && horizontal >= Math.Sqrt(mu / r.Length);
             }
+            case Cutoff.PeriapsisBelow: return pe - radius <= cutoffValue;
+            case Cutoff.ApoapsisBelow:
+            {
+                // Mirror of PeriapsisAbove: a retrograde burn can bring the
+                // high point no lower than where the vehicle is now (past
+                // that, this point becomes the high point and the burn only
+                // drops the far side), so aim for the higher of the target
+                // and the present altitude. As there, stop also once the
+                // horizontal speed has fallen to circular speed √(μ/r): the
+                // orbit is then round at the height it is actually at.
+                var reachable = Math.Max(cutoffValue, r.Length - radius + 3000);
+                if (ap - radius <= reachable + Math.Max(2000, cutoffValue * .01)) return true;
+                var up = r.Normalized;
+                var horizontal = (v - up * Double3.Dot(v, up)).Length;
+                return horizontal <= Math.Sqrt(mu / r.Length);
+            }
             case Cutoff.Energy: return energy >= cutoffValue;
             case Cutoff.DeltaV: return deltaVDone >= cutoffValue;
             case Cutoff.MoonCircular:
@@ -894,11 +973,14 @@ public sealed class Autopilot : MonoBehaviour
         {
             case Step.Insert: Parked(); break;
             case Step.Raise: step = Step.Circularize; break;
+            case Step.Lower: step = Step.LowerCircularize; break;
             case Step.Circularize:
+            case Step.LowerCircularize:
             {
                 GetState(out var r, out var v);
                 Elements(r, v, out var pe, out var ap, out _);
-                Finish("In the maximum orbit: " + TrajectoryDisplay.Km(pe - radius) + " × " + TrajectoryDisplay.Km(ap - radius));
+                Finish((Target == Destination.CustomOrbit ? "In the requested " + TrajectoryDisplay.Km(CustomAltitude) + " orbit: " : "In the maximum orbit: ") +
+                       TrajectoryDisplay.Km(pe - radius) + " × " + TrajectoryDisplay.Km(ap - radius));
                 break;
             }
             case Step.Tli:
@@ -923,7 +1005,8 @@ public sealed class Autopilot : MonoBehaviour
         {
             case Step.Raise: return "Transfer burn to " + TrajectoryDisplay.Km(orbitTarget);
             case Step.Insert: return "Orbit insertion";
-            case Step.Circularize: return "Circularisation";
+            case Step.Circularize: case Step.LowerCircularize: return "Circularisation";
+            case Step.Lower: return "Transfer burn down to " + TrajectoryDisplay.Km(orbitTarget);
             case Step.Tli: return "Translunar injection";
             case Step.Mcc1: case Step.Mcc2: return "Course correction";
             case Step.Loi: return "Lunar orbit insertion";
@@ -973,6 +1056,24 @@ public sealed class Autopilot : MonoBehaviour
                 Status = "Raising orbit to " + TrajectoryDisplay.Km(orbitTarget);
                 return true;
             }
+            case Step.Lower: return PlanLower(r, v, thrust, isp);
+            case Step.LowerCircularize:
+            {
+                // Mirror of Circularize: the low point is where the transfer
+                // ends, so the burn goes there; from a high orbit it's days
+                // away and the Moon shifts its timing, so coast and plan
+                // again 2 h before (the same replanAt wait as above).
+                var tp = TimeToPeriapsis(r, v);
+                if (tp > 3 * 3600)
+                {
+                    replanAt = Now + tp - 2 * 3600;
+                    Status = "Coasting down to " + TrajectoryDisplay.Km(orbitTarget);
+                    return false;
+                }
+                PeriapsisBurn(r, v, thrust, isp, orbitTarget);
+                Status = "Lowering orbit to " + TrajectoryDisplay.Km(orbitTarget);
+                return true;
+            }
             case Step.Tli: return PlanTli(r, v, thrust, isp);
             case Step.Mcc1:
             case Step.Mcc2: return PlanCorrection(r, v, thrust, isp);
@@ -1000,6 +1101,26 @@ public sealed class Autopilot : MonoBehaviour
         burnDuration = BurnTime(deltaVPlanned, thrust, isp);
         burnStart = Now + ta - burnDuration / 2;
         steer = Steer.Prograde; cutoff = Cutoff.PeriapsisAbove; cutoffValue = lowPoint;
+    }
+
+    // The mirror of ApoapsisBurn, for coming down: a retrograde burn centred
+    // on the low point, until the high point is down at 'highPoint' (m
+    // altitude). How: the speed at the low point now comes from the energy
+    // (vis-viva v² = 2(ε + μ/r_pe)); the speed needed there for an orbit
+    // from r_pe up to the wanted high point is vis-viva with
+    // a = (r_pe + r_high)/2; Δv is how much slower that is. The burn starts
+    // half its duration before the low point so it's spread evenly about it.
+    private void PeriapsisBurn(Double3 r, Double3 v, double thrust, double isp, double highPoint)
+    {
+        var tp = TimeToPeriapsis(r, v);
+        Elements(r, v, out var pe, out _, out var energy);
+        var vPe = Math.Sqrt(Math.Max(0, 2 * (energy + mu / pe)));
+        var rh = radius + highPoint;
+        var wanted = Math.Sqrt(mu * (2 / pe - 2 / (pe + rh)));
+        deltaVPlanned = Math.Max(0, vPe - wanted);
+        burnDuration = BurnTime(deltaVPlanned, thrust, isp);
+        burnStart = Now + tp - burnDuration / 2;
+        steer = Steer.Retrograde; cutoff = Cutoff.ApoapsisBelow; cutoffValue = highPoint;
     }
 
     // Burn time (s) for a Δv with the installed engines, from the rocket
@@ -1035,22 +1156,47 @@ public sealed class Autopilot : MonoBehaviour
         var m1 = m0 - liquid - solid;
         var total = m1 > 0 && m0 > m1 ? stageIsp * EnginePerformance.G0 * Math.Log(m0 / m1) : 0;
         if (!assembly.IsPreset || assembly.StagingInProgress) return total;
+        return total + LaterStagesDeltaV(RocketPresets.All[assembly.PresetIndex], assembly.StageIndex + 1);
+    }
 
-        // Stages still to come, from the preset: each lifts everything above it.
-        var p = RocketPresets.All[assembly.PresetIndex];
-        for (var k = assembly.StageIndex + 1; k < assembly.StageCount; k++)
+    // Vacuum Δv (m/s) of a preset's stages from 'first' (1 = the first upper
+    // stage) to the top, as they'll be when each lights: each lifts
+    // everything above it. How, per stage k: m0 = StackMass(k) (the stage
+    // and all above it, fully loaded, plus the payload), m1 = m0 minus its
+    // usable propellant, Isp = its engines' combined vacuum Isp (StageIsp);
+    // Δv = Isp·g0·ln(m0/m1), summed.
+    private static double LaterStagesDeltaV(RocketPresets.Preset p, int first)
+    {
+        double total = 0;
+        if (p.upperStages == null) return 0;
+        for (var k = Math.Max(1, first); k <= p.upperStages.Length; k++)
         {
             var spec = p.upperStages[k - 1];
-            double above = p.payloadMass;
-            for (var j = k - 1; j < p.upperStages.Length; j++) above += p.StageDry(j + 1) + p.upperStages[j].fuelMass + p.upperStages[j].oxidizerMass;
             var engines = Array.ConvertAll(spec.engines, EnginePerformance.Reference);
-            double thrust = 0, flow = 0;
-            foreach (var e in engines) if (e != null && e.vacuumIsp > 0) { thrust += e.vacuumThrust; flow += e.vacuumThrust / e.vacuumIsp; }
-            var usable = Usable(spec.fuelMass, spec.oxidizerMass, Engine(i => engines[i], engines.Length));
-            var end = above - usable;
-            if (flow > 0 && end > 0) total += thrust / flow * EnginePerformance.G0 * Math.Log(above / end);
+            var isp = StageIsp(engines);
+            var above = StackMass(p, k);
+            var end = above - Usable(spec.fuelMass, spec.oxidizerMass, Engine(i => engines[i], engines.Length));
+            if (isp > 0 && end > 0) total += isp * EnginePerformance.G0 * Math.Log(above / end);
         }
         return total;
+    }
+
+    // Mass (kg) of a preset's upper stage k fully loaded with everything it
+    // carries: the payload, plus each stage from k up (dry + propellant).
+    private static double StackMass(RocketPresets.Preset p, int k)
+    {
+        double above = p.payloadMass;
+        for (var j = k - 1; j < p.upperStages.Length; j++) above += p.StageDry(j + 1) + p.upperStages[j].fuelMass + p.upperStages[j].oxidizerMass;
+        return above;
+    }
+
+    // Combined vacuum Isp (s) of a set of engines: total thrust / total mass
+    // flow, with each engine's flow = thrust / Isp (so g0 cancels).
+    private static double StageIsp(EngineParameters[] engines)
+    {
+        double thrust = 0, flow = 0;
+        foreach (var e in engines) if (e != null && e.vacuumIsp > 0) { thrust += e.vacuumThrust; flow += e.vacuumThrust / e.vacuumIsp; }
+        return flow > 0 ? thrust / flow : 0;
     }
 
     // The first engine with a mixture ratio (a stage's engines share one).
@@ -1109,21 +1255,20 @@ public sealed class Autopilot : MonoBehaviour
     // x³ − 15x² − 9x − 1 = 0 (from setting d(Δv)/d(r2) = 0).
     private const double HohmannPeakRatio = 15.58172;
 
-    // Δv a launch typically spends reaching low orbit: 7.8 km/s of orbital
-    // speed plus ~1.8 km/s lost to gravity, drag and steering on the way up
-    // (Earth's spin, given back for an eastward launch, is taken off
-    // separately). Measured on this autopilot's own Falcon 9 ascents:
-    // 9,107 m/s used + 463 m/s of spin. Heavier, slower-climbing rockets
-    // lose more, so it's an estimate - the real figure is measured in orbit.
-    private const double AscentDeltaV = 9570;
     private double predictedMax = -1;
+    /// <summary>Δv (m/s) the last pad prediction expects the ascent to use -
+    /// from SimulateAscent, so it depends on this rocket's weight. −1 = none.</summary>
+    public double PredictedAscentDeltaV { get; private set; } = -1;
+    /// <summary>Why the last ascent simulation didn't make orbit ("" = it did).</summary>
+    public string AscentSimNote { get; private set; } = "";
 
     /// <summary>
     /// The highest circular orbit (m altitude) this rocket should reach, from
-    /// its Δv now. How: on the pad, the budget is the Δv left minus a typical
-    /// ascent to the 200 km parking orbit (AscentDeltaV, less the eastward
-    /// ground speed Earth's spin gives at the pad's latitude: ω·R·cos φ); in
-    /// orbit it's simply the Δv left, starting from the present orbit's mean
+    /// its Δv now. How: on the pad, SimulateAscent flies this rocket's ascent
+    /// to the 200 km parking orbit in a quick simulation and returns the Δv
+    /// it will have left there and the orbit it ends in - so a heavier
+    /// payload (slower climb, more lost to gravity) shows up directly; in
+    /// orbit it's simply the Δv measured now, from the present orbit's mean
     /// radius. After a 5% reserve and 30 m/s for steering, HighestCircular
     /// finds where that budget gets to. -1 if it can't reach orbit at all.
     /// </summary>
@@ -1138,9 +1283,8 @@ public sealed class Autopilot : MonoBehaviour
         double r1, budget;
         if (!rocket.Launched)
         {
-            var spin = planet.RotationRate * radius * Math.Cos(rocket.LaunchLatitudeDegrees * Mathf.Deg2Rad);
-            r1 = radius + ParkingAltitude;
-            budget = deltaV - (AscentDeltaV - spin);
+            budget = SimulateAscentBest(out r1);
+            PredictedAscentDeltaV = budget >= 0 ? simSpent : -1;
         }
         else
         {
@@ -1151,6 +1295,374 @@ public sealed class Autopilot : MonoBehaviour
         }
         if (budget < 0) return -1;
         return HighestCircular(r1, budget * (1 - DeltaVReserve) - 30) - radius;
+    }
+
+    // --- Ascent simulation (the pad prediction) ------------------------------------
+
+    private const double SimStep = .5;          // s per integration step
+    private const double SimMaxSeconds = 4000;  // give up: no orbit by then
+
+    // How much steeper than the autopilot's own pitch program each retry
+    // flies: the factor scales the 65° the open-loop profile pitches over by
+    // 70 km (1 = exactly Ascent()'s program).
+    private static readonly double[] SimSteepness = { 1, .85, .7, .55, .4 };
+
+    // The real flights spend a little more than the ideal simulation - the
+    // vehicle wobbling round the commanded attitude, the engines swivelled
+    // off-axis to steer, staging transients. Measured (ascent Δv flown vs
+    // simulated): Falcon 9 15 t +2.2 %, Saturn V empty +0.6 %, 45.7 t
+    // +3.1 %, 70 t +3.2 % - so the simulated ascent is charged 2.5 % more.
+    private const double SimSteeringLoss = .025;
+    private double simSpent;   // Δv (m/s) the last successful simulated ascent used, with that allowance
+
+    /// <summary>
+    /// The ascent simulation, made robust for heavy rockets. How: flies it
+    /// first with the autopilot's exact pitch program; if that doesn't make
+    /// orbit, again with the pitch-over cut to 85 %, 70 %, 55 % and 40 %
+    /// (steeper climbs), and takes the first that does. Why: a heavy vehicle
+    /// (Saturn V with the Apollo payload) doesn't follow the steering as
+    /// crisply as the ideal point-mass here - in the real flight its path
+    /// ends up steeper (71 km at first-stage cutoff against the ideal
+    /// program's 42 km) - and its weak upper stage needs that height: flown
+    /// exactly as commanded it sinks back. Compared with real autopilot
+    /// flights the first try is within 1-2 % (Falcon 9 with 15 t: 8,900 vs
+    /// 9,098 m/s used; empty Saturn V: 9,420 vs 9,479).
+    /// </summary>
+    private double SimulateAscentBest(out double orbitRadius)
+    {
+        orbitRadius = 0;
+        var firstNote = "";
+        foreach (var steepness in SimSteepness)
+        {
+            var left = SimulateAscent(out orbitRadius, steepness, out var spent);
+            // Made orbit: charge the steering allowance against what's left -
+            // a rocket that only just makes it (the Shuttle) counts as in
+            // orbit with nothing to spare, not as failing.
+            if (left >= 0) { simSpent = spent * (1 + SimSteeringLoss); return Math.Max(0, left - SimSteeringLoss * spent); }
+            if (firstNote.Length == 0) firstNote = AscentSimNote;
+        }
+        AscentSimNote = firstNote;   // report why the autopilot's own program fails
+        return -1;
+    }
+
+    /// <summary>
+    /// Flies this rocket's ascent to the parking orbit in a fast simulation
+    /// and returns the vacuum Δv (m/s) it will have left in orbit (−1 = it
+    /// doesn't make orbit); 'orbitRadius' = the mean radius of the orbit it
+    /// ends in (m). Weight enters everywhere: the acceleration is thrust ÷
+    /// the real, falling mass, so a heavy rocket climbs slowly and spends
+    /// longer holding itself up against gravity, and drag (a force) slows a
+    /// light one more. How:
+    ///  * the vehicle, as now on the pad: its mass (payload, all stages),
+    ///    the first stage's installed engines (thrust from the engine model
+    ///    at the outside pressure, so it grows as the air thins), its flight
+    ///    program (throttle schedule, single-engine cutoffs, cutoff time),
+    ///    solid boosters (their thrust curve) and timed drops; then each
+    ///    upper stage from the preset (its engines, usable propellant,
+    ///    separation and ignition delays, the stack mass it lifts);
+    ///  * the flight, in the plane of motion (2-D, Earth-centred, not
+    ///    turning): every SimStep seconds, gravity μ/r² toward the centre,
+    ///    thrust along the pitch the autopilot would command (SimPitch - the
+    ///    same vertical rise, gravity-turn profile, closed-loop law and
+    ///    airflow limit as Ascent()), drag against the velocity relative to
+    ///    the air (which turns with Earth: eastward at ω·r·cos latitude);
+    ///  * the same end conditions as Ascent(): a safe orbit on the last
+    ///    stage; a lower stage still burning in orbit spends itself prograde;
+    ///    or high point at the target with a short burn left - finished by a
+    ///    circularising burn there (its Δv from vis-viva, subtracted);
+    ///  * what's left: the last burning stage's propellant by the rocket
+    ///    equation at its present mass, plus the stages not yet lit;
+    ///    'spent' = the Δv the engines delivered on the way (Σ thrust/mass ×
+    ///    step, boosters included, plus the final burn).
+    /// </summary>
+    private double SimulateAscent(out double orbitRadius, double steepness, out double spent)
+    {
+        orbitRadius = 0;
+        spent = 0;   // Δv delivered so far: thrust/mass summed over the steps (+ the final burn)
+        AscentSimNote = "";
+        var isPreset = assembly.IsPreset;
+        var preset = isPreset ? RocketPresets.All[assembly.PresetIndex] : default;   // a struct: 'default' = none
+        var stageCount = isPreset && preset.Staged ? preset.upperStages.Length + 1 : 1;
+        var target = radius + ParkingAltitude;
+        var padMass = flight.TotalMass;
+
+        // Stage being flown and its propulsion.
+        var k = 0;
+        var mass = padMass;
+        EngineParameters[] engines; int[] sockets;
+        FirstStageEngines(out engines, out sockets);
+        var propellant = (double)Usable(flight.FuelRemaining, flight.OxidizerRemaining, Engine(i => engines[i], engines.Length));
+        var stageClock = 0.0;                  // s since this stage lit
+        var cutoffAt = isPreset ? (double)preset.mecoSeconds : 0;
+        var throttleProgram = isPreset ? preset.throttleProgram : null;
+        var engineCutoffs = isPreset ? preset.engineCutoffs : null;
+        var drops = isPreset ? preset.firstStageDrops : null;
+        var dropsDone = 0;
+        var solid = flight.SolidBoosterCount > 0 && isPreset ? EnginePerformance.Solid(preset.solidBoosterId) : null;
+        var solidCount = solid != null ? flight.SolidBoosterCount : 0;
+        double solidLeft = flight.SolidPropellant;
+        var coastUntil = -1.0;                 // staging: unpowered until this time
+
+        // 2-D state: Earth's centre at the origin, the pad at (0, R), east = +x.
+        // Inertial velocity starts as the pad's eastward motion with Earth.
+        var lat = rocket.LaunchLatitudeDegrees * Mathf.Deg2Rad;
+        var airSpin = planet.RotationRate * Math.Cos(lat);   // rad/s: the air's eastward turn rate here
+        double x = 0, y = radius, vx = airSpin * radius, vy = 0;
+        var pitch = new SimPitch(steepness);
+
+        for (var t = 0.0; t < SimMaxSeconds; t += SimStep)
+        {
+            var rl = Math.Sqrt(x * x + y * y);
+            var altitude = rl - radius;
+            if (t > 10 && altitude < 0) { AscentSimNote = "falls back to the ground"; return -1; }
+            double ux = x / rl, uy = y / rl;          // up
+            double ax = uy, ay = -ux;                 // along: eastward, square to up
+            // The present orbit (vacuum ellipse): energy ε = v²/2 − μ/r,
+            // angular momentum h = x·vy − y·vx, eccentricity from them,
+            // e = √(1 + 2εh²/μ²), semi-latus rectum p = h²/μ, low and high
+            // points p/(1 ± e).
+            var speed2 = vx * vx + vy * vy;
+            var energy = speed2 / 2 - mu / rl;
+            var h = x * vy - y * vx;
+            var e = Math.Sqrt(Math.Max(0, 1 + 2 * energy * h * h / (mu * mu)));
+            var pSemi = h * h / mu;
+            var pe = pSemi / (1 + e);
+            var ap = e < 1 ? pSemi / (1 - e) : double.PositiveInfinity;
+            var lastStage = k == stageCount - 1;
+            var safeOrbit = pe - radius >= ParkingAltitude - 10000 || (pe - radius > 150000 && ap - radius > ParkingAltitude * 1.5);
+            if (safeOrbit && lastStage)
+            {
+                orbitRadius = (pe + ap) / 2;
+                return StageDeltaV(engines, mass, propellant) + (isPreset ? LaterStagesDeltaV(preset, k + 1) : 0);
+            }
+            // High point at the target and a short burn left at the top:
+            // coast up and round the orbit off there, Δv = circular speed
+            // √(μ/r_ap) minus the speed it will have there, √(2(ε + μ/r_ap)).
+            if (lastStage && ap - radius >= ParkingAltitude - 5000 && altitude > 120000 && !double.IsInfinity(ap))
+            {
+                var vAp = Math.Sqrt(Math.Max(0, 2 * (energy + mu / ap)));
+                if (vAp >= .9 * Math.Sqrt(mu / ap))
+                {
+                    orbitRadius = ap;
+                    spent += Math.Sqrt(mu / ap) - vAp;
+                    var left = StageDeltaV(engines, mass, propellant) - (Math.Sqrt(mu / ap) - vAp);
+                    if (left < 0) AscentSimNote = "short of the burn to round the orbit off by " + (-left).ToString("N0") + " m/s";
+                    return left >= 0 ? left : -1;
+                }
+            }
+
+            // Thrust now (N) and the propellant flows it burns (kg/s).
+            var pressure = StandardAtmosphere.Pressure(Math.Max(0, altitude));
+            double thrust = 0, liquidFlow = 0, solidFlow = 0;
+            var powered = t >= coastUntil && (cutoffAt <= 0 || stageClock < cutoffAt || (lastStage && k > 0));
+            if (powered && propellant > 0)
+            {
+                var throttle = Math.Min(1, ProgramThrottleAt(throttleProgram, stageClock));
+                for (var i = 0; i < engines.Length; i++)
+                {
+                    if (engines[i] == null || EngineCutAt(engineCutoffs, sockets[i], stageClock)) continue;
+                    var r = EnginePerformance.Evaluate(engines[i], throttle, pressure);
+                    if (!r.valid) continue;
+                    thrust += r.thrust; liquidFlow += r.massFlow;
+                }
+            }
+            if (k == 0 && solidCount > 0 && solidLeft > 0)
+            {
+                thrust += solidCount * solid.Thrust(t, pressure);
+                solidFlow = solidCount * solid.MassFlow(t);
+            }
+            if (t == 0 && thrust < padMass * mu / (radius * radius)) { AscentSimNote = "thrust below its weight"; return -1; }
+
+            // This stage done (tanks dry, or its programmed cutoff passed on a
+            // lower stage): the next separates and lights after its delays.
+            // (On the first stage, strap-on solids still burning keep it going.)
+            var liquidDone = propellant <= 0 || (cutoffAt > 0 && stageClock >= cutoffAt && !(lastStage && k > 0));
+            var solidsDone = k > 0 || solidCount == 0 || solidLeft <= 0;
+            var stageDone = t >= coastUntil && liquidDone && solidsDone;
+            if (stageDone)
+            {
+                if (lastStage)   // nothing left, short of orbit
+                {
+                    AscentSimNote = "propellant runs out at " + TrajectoryDisplay.Km(altitude) + ", " +
+                        (Math.Sqrt(mu / rl) - Math.Abs(vx * ax + vy * ay)).ToString("N0") + " m/s short of orbital speed";
+                    return -1;
+                }
+                k++;
+                var spec = preset.upperStages[k - 1];
+                engines = Array.ConvertAll(spec.engines, EnginePerformance.Reference);
+                sockets = new int[engines.Length];
+                for (var i = 0; i < sockets.Length; i++) sockets[i] = i;
+                mass = StackMass(preset, k);
+                propellant = Usable(spec.fuelMass, spec.oxidizerMass, Engine(i => engines[i], engines.Length));
+                cutoffAt = spec.burnSeconds; throttleProgram = null; engineCutoffs = spec.engineCutoffs;
+                drops = spec.drops; dropsDone = 0; solidCount = 0;
+                // Unpowered through separation and ignition; the new stage's
+                // clock (for its cutoff, engine cutoffs and drops) starts at
+                // its ignition - it only runs once coastUntil has passed.
+                coastUntil = t + spec.separationDelay + spec.ignitionDelay;
+                stageClock = 0;
+                thrust = liquidFlow = solidFlow = 0;
+            }
+
+            // Where to push: the autopilot's pitch, or prograde once in a safe
+            // orbit with a lower stage still burning.
+            var airX = vx - ax * airSpin * rl; var airY = vy - ay * airSpin * rl;   // velocity through the air
+            var airSpeed = Math.Sqrt(airX * airX + airY * airY);
+            var density = StandardAtmosphere.Density(pressure, StandardAtmosphere.TemperatureKelvin(Math.Max(0, altitude)));
+            double dirX, dirY;
+            if (safeOrbit) { var vs = Math.Sqrt(speed2); dirX = vx / vs; dirY = vy / vs; }
+            else pitch.Direction(this, ux, uy, ax, ay, vx, vy, rl, altitude, target, mass > 0 ? thrust / mass : 0,
+                                 airX, airY, airSpeed, .5 * density * airSpeed * airSpeed, out dirX, out dirY);
+
+            // Accelerations: gravity, thrust/mass, drag/mass (the vehicle's own
+            // drag model; its force = deceleration × the pad mass it was
+            // computed with), then one step (velocity first, then position).
+            var g = mu / (rl * rl);
+            var accX = -ux * g + dirX * thrust / mass;
+            var accY = -uy * g + dirY * thrust / mass;
+            if (airSpeed > .1)
+            {
+                var drag = flight.DragDecelerationAt(altitude, airSpeed) * padMass / mass;
+                accX -= airX / airSpeed * drag; accY -= airY / airSpeed * drag;
+            }
+            spent += thrust / mass * SimStep;
+            vx += accX * SimStep; vy += accY * SimStep;
+            x += vx * SimStep; y += vy * SimStep;
+
+            // Propellant and mass, the clocks, and anything dropped on schedule.
+            var burnt = Math.Min(propellant, liquidFlow * SimStep);
+            propellant -= burnt; mass -= burnt;
+            if (solidCount > 0)
+            {
+                var solidBurnt = Math.Min(solidLeft, solidFlow * SimStep);
+                solidLeft -= solidBurnt; mass -= solidBurnt;
+                if (solidLeft <= 0 || t >= solid.BurnTime) { solidLeft = 0; }
+            }
+            if (t >= coastUntil) stageClock += SimStep;
+            while (drops != null && dropsDone < drops.Length && stageClock >= drops[dropsDone].time)
+            {
+                var d = drops[dropsDone++];
+                if (!(preset.fairingOff && RocketPresets.Preset.IsFairingDrop(d))) mass -= d.mass;
+                if (d.solids && solidCount > 0) { mass -= solidCount * (solid.inertMass + solidLeft / solidCount); solidCount = 0; solidLeft = 0; }
+            }
+        }
+        AscentSimNote = "no orbit within " + SimMaxSeconds.ToString("N0") + " s";
+        return -1;
+    }
+
+    // The first stage's engines as installed (one per socket, null = empty)
+    // and their socket numbers (for the flight program's engine cutoffs).
+    private void FirstStageEngines(out EngineParameters[] engines, out int[] sockets)
+    {
+        engines = new EngineParameters[assembly.SocketCount];
+        sockets = new int[assembly.SocketCount];
+        for (var i = 0; i < engines.Length; i++) { engines[i] = assembly.GetParameters(i); sockets[i] = i; }
+    }
+
+    // Vacuum Δv (m/s) of 'propellant' kg burnt by these engines from 'mass'
+    // kg: Isp·g0·ln(m / (m − propellant)).
+    private static double StageDeltaV(EngineParameters[] engines, double mass, double propellant)
+    {
+        var isp = StageIsp(engines);
+        var end = mass - propellant;
+        return isp > 0 && end > 0 && propellant > 0 ? isp * EnginePerformance.G0 * Math.Log(mass / end) : 0;
+    }
+
+    // A flight program's throttle limit 'seconds' after the stage lit - the
+    // same (time, limit) pair table, interpolated, as RocketFlightModel's
+    // ProgramThrottle. 1 = no program.
+    private static double ProgramThrottleAt(float[] program, double seconds)
+    {
+        if (program == null || program.Length < 2) return 1;
+        if (seconds <= program[0]) return program[1];
+        for (var i = 2; i + 1 < program.Length; i += 2)
+            if (seconds <= program[i]) return Mathf.Lerp(program[i - 1], program[i + 1], (float)((seconds - program[i - 2]) / Math.Max(1e-6, program[i] - program[i - 2])));
+        return program[^1];
+    }
+
+    // Whether the program has shut engine 'socket' down by 'seconds' after
+    // the stage lit: (time, socket) pairs, as RocketFlightModel.EngineCutOff.
+    private static bool EngineCutAt(float[] cutoffs, int socket, double seconds)
+    {
+        if (cutoffs == null) return false;
+        for (var i = 0; i + 1 < cutoffs.Length; i += 2)
+            if (Mathf.RoundToInt(cutoffs[i + 1]) == socket && seconds >= cutoffs[i]) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// The ascent's pitch program for the simulation, in 2-D - the same laws
+    /// as Ascent() (see there for the reasoning): straight up to VerticalRise;
+    /// then γ = 90° − 65°·s·(h / 70 km)^0.55 (s = steepness, 1 = Ascent()'s
+    /// own program); from ClosedLoopFrom the closed
+    /// loop - the vertical acceleration wanted, a_z = g_eff + (v_z,wanted −
+    /// v_z)/25 s, gives sin γ = a_z / (thrust/mass), within the same limits,
+    /// turning at most PitchRate °/s. The push is then held within 2-10° of
+    /// the airflow while the dynamic pressure is over 500 Pa. Keeps its own
+    /// commanded pitch between steps, like Ascent()'s gammaCommand.
+    /// </summary>
+    private sealed class SimPitch
+    {
+        private bool closedLoop;
+        private double command = 90, latch;
+        private readonly double steepness;   // scales the open-loop pitch-over (1 = Ascent()'s)
+        public SimPitch(double steepness) => this.steepness = steepness;
+
+        public void Direction(Autopilot a, double ux, double uy, double ax, double ay, double vx, double vy, double rl,
+                              double altitude, double target, double thrustAccel, double airX, double airY, double airSpeed,
+                              double q, out double dirX, out double dirY)
+        {
+            var vz = vx * ux + vy * uy;
+            var vhSigned = vx * ax + vy * ay;
+            var vh = Math.Abs(vhSigned);
+            var circular = Math.Sqrt(a.mu / target);
+            // Heading: along the direction of travel while short of circular
+            // speed, back against it if past it (as toGain does in Ascent).
+            var heading = circular - vhSigned > 1 ? 1.0 : -1.0;
+            double gamma;
+            if (altitude < VerticalRise) gamma = 90;
+            else if (!closedLoop)
+            {
+                gamma = 90 - 65 * steepness * Math.Pow(Math.Min(1, altitude / ProfileTop), .55);
+                if (altitude > ClosedLoopFrom) { closedLoop = true; latch = Math.Max(command, 15); }
+            }
+            else gamma = command;
+            if (closedLoop)
+            {
+                var gEff = a.mu / (rl * rl) - vh * vh / rl;
+                var below = target - rl;
+                var timeToGo = thrustAccel > 0 ? Math.Max(30, (circular - vh) / Math.Min(thrustAccel, 12)) : 300;
+                var vzWanted = below > 0 ? Math.Min(Math.Sqrt(2 * Math.Max(gEff, .5) * below), 2 * below / timeToGo) : below / 60;
+                var azWanted = gEff + (vzWanted - vz) / 25;
+                var maxGamma = vz < 50 && altitude < .9 * ParkingAltitude ? 60 : latch;
+                if (thrustAccel > 0)
+                {
+                    var minSin = below > 5000 && vz < vzWanted + 100 ? 0 : -.25;
+                    gamma = Math.Asin(Math.Max(minSin, Math.Min(Math.Sin(maxGamma * Mathf.Deg2Rad), azWanted / thrustAccel))) * Mathf.Rad2Deg;
+                }
+                gamma = Mathf.MoveTowards((float)command, (float)gamma, (float)(PitchRate * SimStep));
+            }
+            command = gamma;
+            var g = gamma * Mathf.Deg2Rad;
+            dirX = ax * heading * Math.Cos(g) + ux * Math.Sin(g);
+            dirY = ay * heading * Math.Cos(g) + uy * Math.Sin(g);
+            // Airflow limit: if the push is more than 'limit' off the airflow,
+            // swing it back to exactly 'limit' (the angle between two 2-D
+            // directions from atan2; the result rotated that far from the flow).
+            if (altitude >= VerticalRise && airSpeed > 30 && q > 500)
+            {
+                var limit = Mathf.Lerp(10f, 2f, Mathf.InverseLerp(1000f, 15000f, (float)q)) * Mathf.Deg2Rad;
+                var flow = Math.Atan2(airY, airX);
+                var off = Math.Atan2(dirY, dirX) - flow;
+                while (off > Math.PI) off -= 2 * Math.PI;
+                while (off < -Math.PI) off += 2 * Math.PI;
+                if (Math.Abs(off) > limit)
+                {
+                    var angle = flow + Math.Sign(off) * limit;
+                    dirX = Math.Cos(angle); dirY = Math.Sin(angle);
+                }
+            }
+        }
     }
 
     // "low × high" altitudes of the present orbit, for the panel.
@@ -1182,6 +1694,31 @@ public sealed class Autopilot : MonoBehaviour
         Elements(r, v, out var pe, out var ap, out _);
         var r1 = (pe + ap) / 2;
         var budget = RemainingDeltaV() * (1 - DeltaVReserve) - 30;
+        if (Target == Destination.CustomOrbit)
+        {
+            // Custom orbit: the target is the typed height, not the highest
+            // affordable. Check the whole Hohmann transfer (both burns) fits
+            // the Δv budget first, so it never strands half-way up.
+            var r2 = radius + CustomAltitude;
+            var need = Hohmann(r1, r2);
+            if (need > budget)
+            {
+                Fail("not enough Δv for " + TrajectoryDisplay.Km(CustomAltitude) + ": needs " + need.ToString("N0") +
+                     " m/s, has " + Math.Max(0, budget).ToString("N0") + " (after reserve). Max reachable ≈ " +
+                     TrajectoryDisplay.Km(HighestCircular(r1, budget) - radius) + ".");
+                return false;
+            }
+            orbitTarget = CustomAltitude;
+            var at = (r1 + r2) / 2;
+            // First Hohmann burn: circular √(μ/r1) up to the ellipse's √(μ/r1)·√(r2/a).
+            deltaVPlanned = Math.Sqrt(mu / r1) * (Math.Sqrt(r2 / at) - 1);
+            burnDuration = BurnTime(deltaVPlanned, thrust, isp);
+            burnStart = Now + TurnLead;
+            steer = Steer.Prograde; cutoff = Cutoff.ApoapsisAbove; cutoffValue = orbitTarget;
+            Status = "Raising orbit to " + TrajectoryDisplay.Km(orbitTarget) + " · transfer " + need.ToString("N0") +
+                     " m/s of " + RemainingDeltaV().ToString("N0") + " m/s left";
+            return true;
+        }
         var lo = HighestCircular(r1, budget);
         orbitTarget = lo - radius;
         if (orbitTarget - (r1 - radius) < 20000)
@@ -1202,6 +1739,38 @@ public sealed class Autopilot : MonoBehaviour
                      ? " - the highest stable Earth orbit (the Moon breaks up any higher); " + (budget - Hohmann(r1, lo)).ToString("N0") + " m/s to spare"
                      : " - the maximum with the " + RemainingDeltaV().ToString("N0") + " m/s measured in orbit") +
                  (predictedMax > 0 ? " (predicted before launch: " + TrajectoryDisplay.Km(predictedMax) + ")" : "");
+        return true;
+    }
+
+    // Custom orbit lower than the present one, first burn. How: the mirror
+    // of the custom branch of PlanRaise - from the present orbit's mean
+    // radius r1 down to r2 = radius + the typed height, a Hohmann transfer
+    // whose total Δv is the same as going up between the two (Hohmann(r2,
+    // r1)) and is checked against the budget; the first burn slows from
+    // circular √(μ/r1) to the transfer ellipse's √(μ/r1)·√(r2/a) at the
+    // top, a = (r1 + r2)/2. It's flown retrograde after the turn and cut off
+    // when the low point is down at the target (PeriapsisBelow).
+    private bool PlanLower(Double3 r, Double3 v, double thrust, double isp)
+    {
+        Elements(r, v, out var pe, out var ap, out _);
+        var r1 = (pe + ap) / 2;
+        var r2 = radius + CustomAltitude;
+        var budget = RemainingDeltaV() * (1 - DeltaVReserve) - 30;
+        var need = Hohmann(r2, r1);
+        if (need > budget)
+        {
+            Fail("not enough Δv to come down to " + TrajectoryDisplay.Km(CustomAltitude) + ": needs " + need.ToString("N0") +
+                 " m/s, has " + Math.Max(0, budget).ToString("N0") + " (after reserve).");
+            return false;
+        }
+        orbitTarget = CustomAltitude;
+        var a = (r1 + r2) / 2;
+        deltaVPlanned = Math.Sqrt(mu / r1) * (1 - Math.Sqrt(r2 / a));
+        burnDuration = BurnTime(deltaVPlanned, thrust, isp);
+        burnStart = Now + TurnLead;
+        steer = Steer.Retrograde; cutoff = Cutoff.PeriapsisBelow; cutoffValue = orbitTarget;
+        Status = "Lowering orbit to " + TrajectoryDisplay.Km(orbitTarget) + " · transfer " + need.ToString("N0") +
+                 " m/s of " + RemainingDeltaV().ToString("N0") + " m/s left";
         return true;
     }
 
@@ -1742,6 +2311,9 @@ public sealed class Autopilot : MonoBehaviour
     // --- Panel -----------------------------------------------------------------------
 
     private GUIStyle boxTitle, boxText;
+    // What's in the height box, as typed (kept as text so a half-typed
+    // number isn't rejected or reformatted while editing).
+    private string heightText = "1000";
     private string prediction;
     private float nextPrediction;
 
@@ -1762,12 +2334,32 @@ public sealed class Autopilot : MonoBehaviour
         const float w = 300;
         var x = Screen.width - w - 16;
         var y = 84f;
-        GUILayout.BeginArea(new Rect(x, y, w, 270), GUI.skin.box);
+        GUILayout.BeginArea(new Rect(x, y, w, 330), GUI.skin.box);   // 330: room for the custom-height row
         GUILayout.Label("AUTOPILOT" + (Engaged ? " · ON" : ""), boxTitle);
         GUILayout.Label("Orbit", boxText);
         GUILayout.BeginHorizontal();
         if (Button("Low orbit", Engaged && Target == Destination.LowOrbit)) Engage(Destination.LowOrbit);
         if (Button(new GUIContent("Max orbit", "For study: the highest circular orbit this rocket can reach."), Engaged && Target == Destination.MaxOrbit)) Engage(Destination.MaxOrbit);
+        GUILayout.EndHorizontal();
+        // Custom height: a text box (km) and a Go button. How: on Go the text
+        // is parsed (invariant culture, so '.' is the decimal point; commas
+        // and spaces stripped so "35,786" works), turned into metres and
+        // stored in CustomAltitude; Engage then range-checks it. A bad number
+        // shows a message instead of engaging.
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("Height (km)", boxText, GUILayout.Width(72));
+        heightText = GUILayout.TextField(heightText, 12, GUILayout.Width(110));
+        if (Button(new GUIContent("Go", "Fly to a circular orbit at this height: launches to it (or from the pad via the 200 km parking orbit), or raises / lowers an existing orbit with a Hohmann transfer."),
+                   Engaged && Target == Destination.CustomOrbit))
+        {
+            if (double.TryParse(heightText.Replace(",", "").Replace(" ", ""), System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out var km) && km > 0)
+            {
+                CustomAltitude = km * 1000;
+                Engage(Destination.CustomOrbit);
+            }
+            else Status = "Type a height in km, e.g. 400 or 35786";
+        }
         GUILayout.EndHorizontal();
         GUILayout.Label("Destination (via low orbit)", boxText);
         GUILayout.BeginHorizontal();
@@ -1778,8 +2370,9 @@ public sealed class Autopilot : MonoBehaviour
         {
             nextPrediction = Time.unscaledTime + 1;
             var max = PredictMaxOrbit(out var deltaV);
-            prediction = "Δv " + deltaV.ToString("N0") + " m/s · " + (max < 0
-                ? (rocket.Launched ? "max orbit: once in orbit" : "can't reach orbit")
+            prediction = "Δv " + deltaV.ToString("N0") + " m/s" +
+                (!rocket.Launched && PredictedAscentDeltaV > 0 ? " (ascent ≈ " + PredictedAscentDeltaV.ToString("N0") + ")" : "") + " · " + (max < 0
+                ? (rocket.Launched ? "max orbit: once in orbit" : "can't reach orbit" + (AscentSimNote.Length > 0 ? " (simulated: " + AscentSimNote + ")" : ""))
                 : "max orbit ≈ " + TrajectoryDisplay.Km(max) + (max + radius >= StableOrbitRadius - 1 ? " (stability limit - the Moon)" : ""));
         }
         if (!Engaged && prediction != null) GUILayout.Label(prediction, boxText);

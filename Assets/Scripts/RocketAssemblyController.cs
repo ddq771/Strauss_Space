@@ -97,7 +97,11 @@ public sealed class RocketAssemblyController : MonoBehaviour
     }
 
     private const float PanelTop=130f;
-    private const float PanelWidth=320f;
+    // Side panel width, scaled with the window. How: a quarter of the screen
+    // width, clamped to 320 px (the old fixed width, the least the controls
+    // need) .. 460 px (so it never covers too much of the view). Recomputed
+    // every frame, as Screen.width changes when the Game view is resized.
+    private static float PanelWidth=>Mathf.Clamp(Screen.width*.25f,320f,460f);
     private const float PanelInset=24f;
     private static Rect LeftPanelRect
     {
@@ -242,7 +246,8 @@ public sealed class RocketAssemblyController : MonoBehaviour
         }
         GUILayout.Label("Shift/Ctrl: throttle up/down. Z: full throttle. X: cut throttle. Space: toggle ignition. G: stage. W/S/A/D: pitch/yaw. T: SAS. R: re-entry attitude (the attitude the heat shield was built for). H: heat-zone map.",new GUIStyle(GUI.skin.label){wordWrap=true});
         GUILayout.Label(new GUIContent(sasEnabled?"SAS: on - keys set turn rate, release to hold attitude":"SAS: off - keys deflect the engines directly",
-            "The flight computer steers by gimballing the engines (each within its real range and speed). No control with the engines off."));
+            "The flight computer steers by gimballing the engines (each within its real range and speed). No control with the engines off."),
+            new GUIStyle(GUI.skin.label){wordWrap=true});   // wraps instead of running off the panel's edge
         var reentryOn=GUILayout.Toggle(reentryAttitude,new GUIContent(" Re-entry attitude (R)","SAS turns the vehicle to the attitude its heat shield was built for - the orbiter at 40° angle of attack, the Ship belly-first at 65°, a booster engines-first - and holds it there: with RCS while coasting, with the engine gimbals under thrust (an entry burn)."));
         if(reentryOn!=reentryAttitude)SetReentryAttitude(reentryOn);
         SasModeGUI();
@@ -1525,7 +1530,17 @@ public sealed class RocketAssemblyController : MonoBehaviour
         var current=reentryAttitude?7:(int)sasDirection;
         GUILayout.Label(new GUIContent("SAS mode"+(sasDirection!=SasDirection.Hold?" · "+SasReferenceName():""),
             "Where SAS points the nose. Prograde etc. follow the motion: relative to the air below "+(SurfaceModeAltitude/1000).ToString("F0")+" km, to the stars above, and to the Moon inside its sphere of influence. Works coasting (RCS) and under thrust (engine gimbals). Any steering key returns to Hold."));
-        var picked=GUILayout.SelectionGrid(current,SasModeNames,4);
+        // Columns that fit. How: CalcSize measures each name in the button
+        // style (text width + the style's padding); the widest decides the
+        // column width. The room available is the panel width less the
+        // box's padding and the scroll view's vertical scrollbar (~40 px);
+        // dividing gives how many columns fit, kept between 2 and 4, so a
+        // narrow panel gets 4 rows of 2 instead of clipped labels.
+        var widest=0f;
+        foreach(var name in SasModeNames)widest=Mathf.Max(widest,GUI.skin.button.CalcSize(new GUIContent(name)).x);
+        var room=LeftPanelRect.width-40f;
+        var columns=Mathf.Clamp(Mathf.FloorToInt(room/(widest+GUI.skin.button.margin.horizontal)),2,4);
+        var picked=GUILayout.SelectionGrid(current,SasModeNames,columns);
         if(picked==current)return;
         var autopilot=GetComponent<Autopilot>();
         if(autopilot!=null && autopilot.Engaged)autopilot.Disengage("Off - pilot chose a SAS mode");
