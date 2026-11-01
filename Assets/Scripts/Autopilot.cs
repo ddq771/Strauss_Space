@@ -80,7 +80,7 @@ public sealed class Autopilot : MonoBehaviour
     // passes, and Advance() moves step on to the next state.
     // Lower / LowerCircularize are the downward mirror of Raise / Circularize,
     // used only by a custom-height orbit below the present one.
-    private enum Step { Idle, Window, Ascent, Insert, Raise, Circularize, Lower, LowerCircularize, Tli, Mcc1, Mcc2, Loi, Done, Failed }
+    private enum Step { Idle, Window, Ascent, Insert, Raise, Circularize, Lower, LowerCircularize, Escape, Tli, Mcc1, Mcc2, Loi, Done, Failed }
     private enum Steer { Prograde, Retrograde, MoonRetrograde, Fixed, Tli }
     private enum Cutoff { ApoapsisAbove, PeriapsisAbove, ApoapsisBelow, PeriapsisBelow, Energy, DeltaV, MoonCircular }
 
@@ -92,6 +92,16 @@ public sealed class Autopilot : MonoBehaviour
     // ceiling StableOrbitRadius (minus Earth's radius), above which the Moon
     // breaks a circular orbit up.
     public double CustomAltitude = 1_000_000;
+
+    // Max orbit with more Δv than the highest stable orbit needs: the pilot
+    // is asked (a pop-up that pauses the game) whether to spend all of it and
+    // escape Earth, or stay at the highest stable Earth orbit. Ask = not
+    // answered yet this mission (reset by Engage); while the pop-up is open
+    // 'askingEscape' is set and spareDeltaV / escapeSpeed hold its numbers.
+    private enum EscapeChoice { Ask, Escape, Stay }
+    private EscapeChoice escapeChoice;
+    private bool askingEscape;
+    private double spareDeltaV, escapeSpeed, stableTarget;
     private const double MinCustomAltitude = 150000;
     private double MaxCustomAltitude => StableOrbitRadius - (planet != null ? planet.Radius : 6_371_000);
 
@@ -217,6 +227,7 @@ public sealed class Autopilot : MonoBehaviour
         moonTrack = destination == Destination.Moon
             ? new EarthMoonDynamics.MoonTrack(origin, SolarSystem.Instance.RotationAngleAt(origin), 12 * 86400) : null;
         planned = burning = false; replanAt = -1; kickCount = -1; lateCorrections = 0; lateCorrection = false;
+        escapeChoice = EscapeChoice.Ask; CloseEscapePrompt();
         predictedMax = destination == Destination.MaxOrbit || destination == Destination.CustomOrbit ? PredictMaxOrbit(out _) : -1;
         // Custom orbit from the pad: the pre-launch simulation already says
         // the highest circular orbit this rocket reaches (predictedMax, m
@@ -275,6 +286,7 @@ public sealed class Autopilot : MonoBehaviour
     public void Disengage(string reason = null)
     {
         if (step == Step.Idle) return;
+        CloseEscapePrompt();   // unpauses the game if the escape question was open
         step = Step.Idle;
         assembly.AutopilotSteering = false;
         if (warpedByAutopilot && TimeWarp.Rate > 1) TimeWarp.Request(1);
@@ -961,7 +973,14 @@ public sealed class Autopilot : MonoBehaviour
             Finish(bound ? "Captured into an elliptical lunar orbit (out of propellant)" : "Out of propellant - flying past the Moon");
             return;
         }
-        Elements(r, v, out var pe, out var ap, out _);
+        Elements(r, v, out var pe, out var ap, out var energy);
+        // Specific energy ε ≥ 0 means unbound: the rocket leaves Earth for
+        // good, and far away keeps the speed v∞ = √(2ε) (ε = v∞²/2 there).
+        if (energy >= 0)
+        {
+            Finish("All Δv spent · escaping Earth, leaving at " + (Math.Sqrt(2 * energy) / 1000).ToString("F2") + " km/s");
+            return;
+        }
         Finish("Out of propellant · orbit " + TrajectoryDisplay.Km(pe - radius) + " × " + TrajectoryDisplay.Km(ap - radius));
     }
 
@@ -1007,6 +1026,7 @@ public sealed class Autopilot : MonoBehaviour
             case Step.Insert: return "Orbit insertion";
             case Step.Circularize: case Step.LowerCircularize: return "Circularisation";
             case Step.Lower: return "Transfer burn down to " + TrajectoryDisplay.Km(orbitTarget);
+            case Step.Escape: return "Escape burn (all Δv)";
             case Step.Tli: return "Translunar injection";
             case Step.Mcc1: case Step.Mcc2: return "Course correction";
             case Step.Loi: return "Lunar orbit insertion";
@@ -1057,6 +1077,23 @@ public sealed class Autopilot : MonoBehaviour
                 return true;
             }
             case Step.Lower: return PlanLower(r, v, thrust, isp);
+            case Step.Escape:
+            {
+                // Escape: one prograde burn that never cuts off by itself -
+                // a DeltaV cutoff of +∞ is never reached (and keeps the
+                // throttle at full, as the ease-off divides by what's left).
+                // It runs through every stage (auto-staging lights the next)
+                // until the last is empty; OutOfPropellantDuringBurn then
+                // ends the mission. Burning low and fast, from the parking
+                // orbit, gets the most out of it (the Oberth effect: the
+                // same Δv adds more energy, v·Δv, where v is greatest).
+                deltaVPlanned = RemainingDeltaV();
+                burnDuration = BurnTime(deltaVPlanned, thrust, isp);
+                burnStart = Now + TurnLead;
+                steer = Steer.Prograde; cutoff = Cutoff.DeltaV; cutoffValue = double.PositiveInfinity;
+                Status = "Escaping Earth: burning all " + deltaVPlanned.ToString("N0") + " m/s prograde";
+                return true;
+            }
             case Step.LowerCircularize:
             {
                 // Mirror of Circularize: the low point is where the transfer
@@ -1721,6 +1758,37 @@ public sealed class Autopilot : MonoBehaviour
         }
         var lo = HighestCircular(r1, budget);
         orbitTarget = lo - radius;
+        // Capped by the Moon, not by Δv, with a useful amount (100+ m/s) to
+        // spare: ask the pilot before committing. How: the spare is the
+        // budget less the whole transfer's cost. The escape speed shown is
+        // what all of the Δv left would give if spent here in one prograde
+        // burn - from circular speed √(μ/r1) up to v = √(μ/r1) + Δv; energy
+        // is conserved on the way out, so far from Earth the speed left
+        // is v∞ = √(v² − 2μ/r1) (an instantaneous-burn estimate; a long
+        // real burn gets a little less). Pausing: time warp is ended first
+        // (rails warp moves the rocket outside physics), then Time.timeScale
+        // = 0 stops FixedUpdate, so nothing flies until a button is pressed.
+        // Returning false leaves the burn unplanned; once answered, the
+        // next physics step plans again with the choice made.
+        var spare = budget - Hohmann(r1, lo);
+        if (lo >= StableOrbitRadius - 1 && spare > 100 && escapeChoice == EscapeChoice.Ask)
+        {
+            if (!askingEscape)
+            {
+                spareDeltaV = spare;
+                var vOut = Math.Sqrt(mu / r1) + RemainingDeltaV();
+                escapeSpeed = Math.Sqrt(Math.Max(0, vOut * vOut - 2 * mu / r1));
+                stableTarget = orbitTarget;
+                if (TimeWarp.Rate > 1) TimeWarp.Request(1);
+                warpedByAutopilot = false;
+                SetThrottle(0);
+                askingEscape = true;
+                Time.timeScale = 0;
+                Status = "Waiting for your answer: escape Earth or stay in the highest stable orbit?";
+            }
+            return false;
+        }
+        if (escapeChoice == EscapeChoice.Escape) { step = Step.Escape; return Plan(); }
         if (orbitTarget - (r1 - radius) < 20000)
         {
             Finish("In orbit: " + TrajectoryDisplay.Km(pe - radius) + " × " + TrajectoryDisplay.Km(ap - radius) +
@@ -2381,6 +2449,53 @@ public sealed class Autopilot : MonoBehaviour
         AutoWarp = GUILayout.Toggle(AutoWarp, " Time warp through coasts");
         if (!Engaged && step == Step.Idle)
             GUILayout.Label(rocket.Launched ? "Takes over from here." : "Launches now and flies the whole way.", boxText);
+        GUILayout.EndArea();
+        if (askingEscape) EscapePromptGUI();
+    }
+
+    // Closes the escape question and restarts time (timeScale back to 1;
+    // the pilot can warp again from there).
+    private void CloseEscapePrompt()
+    {
+        if (!askingEscape) return;
+        askingEscape = false;
+        Time.timeScale = 1;
+    }
+
+    private GUIStyle promptTitle, promptText;
+
+    // The escape question, centred over a dimmed screen. How: drawn last in
+    // OnGUI so it sits above the autopilot box; a full-screen
+    // GUI.Box behind it swallows clicks meant for the view. The buttons
+    // record the choice, close the pop-up (unpausing) and clear 'planned',
+    // so the next physics step plans the Max-orbit burn again - now flying
+    // the Escape step, or the normal raise to the stable ceiling.
+    private void EscapePromptGUI()
+    {
+        promptTitle ??= new GUIStyle(GUI.skin.label) { fontSize = 18, fontStyle = FontStyle.Bold, wordWrap = true, alignment = TextAnchor.MiddleCenter };
+        promptText ??= new GUIStyle(GUI.skin.label) { fontSize = 13, wordWrap = true };
+        var old = GUI.color;
+        GUI.color = new Color(0, 0, 0, .6f);
+        GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), Texture2D.whiteTexture);
+        GUI.color = old;
+        GUI.Box(new Rect(0, 0, Screen.width, Screen.height), GUIContent.none, GUIStyle.none);
+        var w = Mathf.Min(520f, Screen.width - 32f);
+        const float h = 290f;
+        GUILayout.BeginArea(new Rect((Screen.width - w) / 2, (Screen.height - h) / 2, w, h), GUI.skin.window);
+        GUILayout.Label("⚠ GAME PAUSED: ESCAPE EARTH?", promptTitle);
+        GUILayout.Space(6);
+        GUILayout.Label("This rocket has " + spareDeltaV.ToString("N0") + " m/s more than the highest stable Earth orbit (" +
+                        TrajectoryDisplay.Km(stableTarget) + ") needs. Above that height the Moon pulls circular orbits apart, " +
+                        "so the extra Δv can't buy a higher Earth orbit.", promptText);
+        GUILayout.Space(4);
+        GUILayout.Label("Escape: burn every m/s left, prograde, starting now. The rocket leaves Earth for good, at about " +
+                        (escapeSpeed / 1000).ToString("F1") + " km/s once far away, with 0 Δv left.", promptText);
+        GUILayout.Label("Stay: fly to the highest stable Earth orbit (" + TrajectoryDisplay.Km(stableTarget) + ") and keep the spare Δv.", promptText);
+        GUILayout.FlexibleSpace();
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Button("Escape Earth (burn it all)", GUILayout.Height(34))) { escapeChoice = EscapeChoice.Escape; CloseEscapePrompt(); planned = false; }
+        if (GUILayout.Button("Stay in max Earth orbit", GUILayout.Height(34))) { escapeChoice = EscapeChoice.Stay; CloseEscapePrompt(); planned = false; }
+        GUILayout.EndHorizontal();
         GUILayout.EndArea();
     }
 
