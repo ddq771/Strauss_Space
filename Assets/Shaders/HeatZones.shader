@@ -11,6 +11,7 @@ Shader "Strauss Space/Heat Zones"
     {
         _ZoneCount ("Zones", Float) = 0
         _Opacity ("Opacity", Range(0, 1)) = .6
+        _MetersPerUnit ("Metres per mesh unit", Float) = 1000
     }
     SubShader
     {
@@ -30,17 +31,24 @@ Shader "Strauss Space/Heat Zones"
             float4 _PatchDir[96];     // world direction, w = temperature / rating
             float4 _ZoneAxis[8];      // world direction, w = cos(half-angle)
             float4 _ZoneColor[9];     // per zone; [_ZoneCount] = bare structure
-            float _ZoneCount, _Opacity;
+            float _ZoneCount, _Opacity, _MetersPerUnit;
 
             struct appdata { float4 vertex : POSITION; float3 normal : NORMAL; };
-            struct v2f { float4 pos : SV_POSITION; float3 normal : TEXCOORD0; float3 world : TEXCOORD1; };
+            struct v2f { float4 pos : SV_POSITION; float3 normal : TEXCOORD0; float3 local : TEXCOORD1; };
 
             v2f vert(appdata v)
             {
                 v2f o;
                 o.pos = UnityObjectToClipPos(v.vertex);
                 o.normal = UnityObjectToWorldNormal(v.normal);
-                o.world = mul(unity_ObjectToWorld, v.vertex).xyz;
+                // Position on the mesh in metres, for the stripes. How: the
+                // vertex in the mesh's own space, times the object's scale
+                // (the length of its first world-matrix column) gives world
+                // units; the scene is in km, so × _MetersPerUnit (1000) gives
+                // metres. Mesh space moves with the rocket, so the stripes
+                // stay put on the hull instead of sliding as it flies.
+                float scale = length(unity_ObjectToWorld._m00_m10_m20);
+                o.local = v.vertex.xyz * scale * _MetersPerUnit;
                 return o;
             }
 
@@ -60,8 +68,12 @@ Shader "Strauss Space/Heat Zones"
                 float alpha = _Opacity;
                 if (zone == count)
                 {
-                    // Bare structure: diagonal stripes in screen-independent world space.
-                    float stripe = frac(dot(i.world, float3(.7, .7, 0)) * 4);
+                    // Bare structure: diagonal stripes, ~2.8 m apart. How:
+                    // dot(p, (.5, .5, 0)) grows 0.707 per metre along the
+                    // (1, 1, 0) diagonal; × .5 and frac repeat it every
+                    // 1 / (.707 × .5) ≈ 2.8 m; the first half of each
+                    // repeat is solid, the second faint.
+                    float stripe = frac(dot(i.local, float3(.5, .5, 0)) * .5);
                     alpha *= stripe < .5 ? 1 : .35;
                 }
                 // Nearest heating patch: its share of the rating.

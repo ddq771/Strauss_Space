@@ -48,6 +48,14 @@ public sealed class ReentryHeating : MonoBehaviour
     public Func<Vector3> CenterWorld;
     public Func<float> LengthMeters, DiameterMeters;
     public Func<RocketPresets.HeatProtection> Protection;
+    /// <summary>For a hull mesh belonging to a stage that is NOT the one
+    /// flying now (e.g. Starship's Ship while Super Heavy burns): that
+    /// stage's name and protection. False for the flying stage (or anything
+    /// not in a stage), which the heat map draws from Protection.</summary>
+    public delegate bool StageProtectionLookup(Transform mesh, out string stage, out RocketPresets.HeatProtection heat);
+    public StageProtectionLookup OtherStageProtection;
+    /// <summary>Legend lines for the other stages' zones the map shows: label and colour.</summary>
+    public readonly System.Collections.Generic.List<(string label, Color color)> OtherStageZones = new System.Collections.Generic.List<(string, Color)>();
     public Func<bool> Active;                   // false: no heating (on the pad, crashed)
     public Action<string> BurnedUp;
 
@@ -85,6 +93,7 @@ public sealed class ReentryHeating : MonoBehaviour
             heating.LengthMeters = () => Mathf.Max(1f, rocket.ActiveHeight);
             heating.DiameterMeters = () => Mathf.Max(.5f, rocket.ActiveDiameter);
             heating.Protection = () => assembly != null ? assembly.CurrentHeatProtection : default;
+            if (assembly != null) heating.OtherStageProtection = assembly.OtherStageProtection;
             heating.Active = () => rocket.Launched && !flight.Crashed;
             heating.BurnedUp = reason =>
             {
@@ -278,8 +287,77 @@ public sealed class ReentryHeating : MonoBehaviour
         heatMapMaterial.SetVectorArray("_ZoneAxis", zoneAxisArray);
         heatMapMaterial.SetVectorArray("_ZoneColor", zoneColorArray);
         heatMapMaterial.SetFloat("_ZoneCount", zoneCount);
+        heatMapMaterial.SetFloat("_MetersPerUnit", 1f / PlanetBody.WorldUnitsPerMeter);
         RefreshCopies(heatMaps, ref heatMapSourceCount, heatMapMaterial, "Heat zones");
         foreach (var g in heatMaps) if (g != null && !g.activeSelf) g.SetActive(true);
+        OtherStagesOnMap(zoneCount);
+    }
+
+    // The heat map for stages still attached but not flying yet (or the
+    // reverse: a stage below that hasn't dropped). Before this, every mesh
+    // took the flying stage's zones - so on Starship, while Super Heavy
+    // burned, the Ship's tiles were drawn as bare steel and the whole stack
+    // came out one colour. How, per heat-map copy (its parent is the hull
+    // mesh it covers): OtherStageProtection says whether that mesh belongs
+    // to another stage and gives its protection. If not, any property block
+    // is cleared and the copy uses the material's values (the flying
+    // stage, set above). If so, the copy gets a MaterialPropertyBlock - an
+    // override of the material's values for that one renderer - holding
+    // that stage's zone axes (turned into world directions as above) and
+    // colours, and the patch directions with heat 0 (it isn't being heated
+    // as the flying stage; its temperatures aren't tracked). Colours carry
+    // on along the palette after the flying stage's, so no two stages' zones
+    // share a colour; each other stage's zones go into OtherStageZones for
+    // the legend.
+    private readonly System.Collections.Generic.Dictionary<string, MaterialPropertyBlock> stageBlocks = new System.Collections.Generic.Dictionary<string, MaterialPropertyBlock>();
+    private readonly Vector4[] coldPatchDirs = new Vector4[Normals.Length];
+    private void OtherStagesOnMap(int flyingZoneCount)
+    {
+        OtherStageZones.Clear();
+        stageBlocks.Clear();
+        var colorOffset = flyingZoneCount;
+        for (var i = 0; i < Normals.Length; i++)
+        {
+            var d = transform.TransformDirection(Normals[i]);
+            coldPatchDirs[i] = new Vector4(d.x, d.y, d.z, 0);
+        }
+        foreach (var g in heatMaps)
+        {
+            if (g == null) continue;
+            var r = g.GetComponent<MeshRenderer>();
+            if (OtherStageProtection == null || !OtherStageProtection(g.transform.parent, out var stage, out var heat))
+            {
+                r.SetPropertyBlock(null);
+                continue;
+            }
+            if (!stageBlocks.TryGetValue(stage, out var block))
+            {
+                block = new MaterialPropertyBlock();
+                var zones = heat.zones ?? Array.Empty<RocketPresets.HeatZone>();
+                var count = Mathf.Min(zones.Length, MaxZones);
+                var axes = new Vector4[MaxZones];
+                var colors = new Vector4[MaxZones + 1];
+                for (var z = 0; z < count; z++)
+                {
+                    var axis = transform.TransformDirection(heat.ToLocal(zones[z].direction));
+                    axes[z] = new Vector4(axis.x, axis.y, axis.z, Mathf.Cos(zones[z].halfAngle * Mathf.Deg2Rad));
+                    // A zone index past any zone count picks a palette colour
+                    // (ZoneColor only returns the bare amber at zone ≥ count).
+                    var c = ZoneColor(colorOffset + z, int.MaxValue);
+                    colors[z] = c;
+                    OtherStageZones.Add((stage + ": " + zones[z].name, c));
+                }
+                colors[count] = ZoneColor(count, count);   // its bare structure: amber stripes
+                OtherStageZones.Add((stage + ": " + heat.Bare.name, colors[count]));
+                colorOffset += count;
+                block.SetVectorArray("_PatchDir", coldPatchDirs);
+                block.SetVectorArray("_ZoneAxis", axes);
+                block.SetVectorArray("_ZoneColor", colors);
+                block.SetFloat("_ZoneCount", count);
+                stageBlocks[stage] = block;
+            }
+            r.SetPropertyBlock(block);
+        }
     }
 
     // On the pad or after staging: which zone each patch is in, so the map

@@ -1070,6 +1070,39 @@ public sealed class RocketAssemblyController : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// For the heat map: if this hull mesh belongs to a stage other than the
+    /// one flying now, that stage's name and heat protection. How: walks up
+    /// from the mesh to the rocket looking for a "Stage_&lt;Name&gt;" object
+    /// (RocketBodySetup groups each stage's meshes under one); finds which
+    /// preset stage lists &lt;Name&gt; in its model stages (the first stage's
+    /// firstStageModelStages, or an upper stage's modelStages); compares
+    /// that stage number with the flying one (as CurrentHeatProtection
+    /// counts it). False for the flying stage, for meshes in no stage, and
+    /// for a custom build.
+    /// </summary>
+    public bool OtherStageProtection(Transform mesh,out string stage,out RocketPresets.HeatProtection heat)
+    {
+        stage=null;heat=default;
+        if(activePresetIndex<0)return false;
+        var p=RocketPresets.All[activePresetIndex];
+        string group=null;
+        for(var t=mesh;t!=null && t!=transform;t=t.parent)
+            if(t.name.StartsWith("Stage_")){group=t.name.Substring(6);break;}
+        if(group==null)return false;
+        var k=-1;
+        if(p.firstStageModelStages!=null && Array.IndexOf(p.firstStageModelStages,group)>=0)k=0;
+        else if(p.upperStages!=null)
+            for(var i=0;i<p.upperStages.Length;i++)
+                if(p.upperStages[i].modelStages!=null && Array.IndexOf(p.upperStages[i].modelStages,group)>=0){k=i+1;break;}
+        var flying=separated?stageIndex+1:stageIndex;
+        if(k<0 || k==flying)return false;
+        heat=k==0?p.firstStageHeat:p.upperStages[k-1].heat;
+        heat.windwardLocal=TileAxis();
+        stage=k==0?(p.firstStageName??"First stage"):p.upperStages[k-1].name;
+        return true;
+    }
+
     // Which side of the vehicle the heat-shield tiles are on, from the body
     // model's tile meshes still attached (rocket-local, across the axis).
     private Vector3 cachedTileAxis;private int tileAxisStage=-1;
@@ -1177,6 +1210,11 @@ public sealed class RocketAssemblyController : MonoBehaviour
             text+="\n<color=#"+ColorUtility.ToHtmlStringRGB(ReentryHeating.ZoneColor(z,count))+">"+(z<count?"■":"▨")+"</color> <color="+tone+">"+heating.ZoneNames[z]+": "+
                 heating.ZoneHottestC[z].ToString("N0")+" / "+heating.ZoneLimitC[z].ToString("N0")+" °C</color>";
         }
+        // The map also colours the stages not flying yet in their own zones
+        // (ReentryHeating.OtherStagesOnMap): list those too, swatch + name.
+        if(heating.ShowZones)
+            foreach(var (label,color) in heating.OtherStageZones)
+                text+="\n<color=#"+ColorUtility.ToHtmlStringRGB(color)+">"+(color==ReentryHeating.ZoneColor(0,0)?"▨":"■")+"</color> "+label;
         if(heated && !heating.ShowZones)text+="\nH: show the heat zones on the vehicle";
         GUILayout.Label(new GUIContent(text,"Stagnation-point heat flux (Sutton-Graves), and the hottest point of each protected area and of the bare structure against what it's rated for. Over a rating, the vehicle burns up."),style);
     }
