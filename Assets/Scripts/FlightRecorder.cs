@@ -3,6 +3,7 @@ using System.Globalization;
 using System.IO;
 using UnityEngine;
 
+
 /// <summary>
 /// Writes flight telemetry to a CSV file, one row every
 /// <see cref="sampleInterval"/> seconds of simulated time from the moment
@@ -130,7 +131,10 @@ public sealed class FlightRecorder : MonoBehaviour
             : Path.Combine(Application.persistentDataPath, "FlightLogs");
         Directory.CreateDirectory(folder);
         var vehicle = assembly != null && !string.IsNullOrEmpty(assembly.ActivePresetName) ? assembly.ActivePresetName : "Custom";
-        CurrentFile = Path.Combine(folder, "Flight " + vehicle + " " + DateTime.Now.ToString("yyyy-MM-dd HH-mm-ss", CultureInfo.InvariantCulture) + ".csv");
+        // Fair-test flights get "reference" / "replay" in the name (the
+        // Autopilot sets the tag just before liftoff; empty otherwise).
+        var tag = string.IsNullOrEmpty(Autopilot.FlightTag) ? "" : Autopilot.FlightTag + " ";
+        CurrentFile = Path.Combine(folder, "Flight " + vehicle + " " + tag + DateTime.Now.ToString("yyyy-MM-dd HH-mm-ss", CultureInfo.InvariantCulture) + ".csv");
         writer = new StreamWriter(CurrentFile, false) { AutoFlush = true };
         writer.WriteLine(Header);
         elapsed = 0;

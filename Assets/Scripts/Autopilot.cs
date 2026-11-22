@@ -1,5 +1,9 @@
 using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
 using UnityEngine;
+
 
 /// <summary>
 /// Flies the rocket by itself - to a low Earth parking orbit, to the highest
@@ -80,7 +84,9 @@ public sealed class Autopilot : MonoBehaviour
     // passes, and Advance() moves step on to the next state.
     // Lower / LowerCircularize are the downward mirror of Raise / Circularize,
     // used only by a custom-height orbit below the present one.
-    private enum Step { Idle, Window, Ascent, Insert, Raise, Circularize, Lower, LowerCircularize, Escape, Tli, Mcc1, Mcc2, Loi, Done, Failed }
+    // Replay = a fair-test flight steering by a recorded reference program
+    // (see "Fair test" below) instead of by the guidance.
+    private enum Step { Idle, Window, Ascent, Insert, Raise, Circularize, Lower, LowerCircularize, Escape, Tli, Mcc1, Mcc2, Loi, Done, Failed, Replay }
     private enum Steer { Prograde, Retrograde, MoonRetrograde, Fixed, Tli }
     private enum Cutoff { ApoapsisAbove, PeriapsisAbove, ApoapsisBelow, PeriapsisBelow, Energy, DeltaV, MoonCircular }
 
@@ -131,6 +137,7 @@ public sealed class Autopilot : MonoBehaviour
     private const double TransferApogeeFactor = 1.25;       // translunar apogee / the Moon's distance
     private const float PitchRate = 1.5f;                   // deg/s, closed-loop pitch changes
     private const float AlignedDegrees = 6;                 // pointing error at which a burn may light
+    private const float PhysicsWarp = 10;                   // × while powered / turning (exact - see ManageWarp)
 
     private RocketAssemblyController assembly;
     private Rocket rocket;
@@ -227,6 +234,11 @@ public sealed class Autopilot : MonoBehaviour
         moonTrack = destination == Destination.Moon
             ? new EarthMoonDynamics.MoonTrack(origin, SolarSystem.Instance.RotationAngleAt(origin), 12 * 86400) : null;
         planned = burning = false; replanAt = -1; kickCount = -1; lateCorrections = 0; lateCorrection = false;
+        // A normal flight is neither a fair-test reference nor a replay:
+        // clear the recorder's file-name tag and any recording left over.
+        // ("Fly reference" sets recordNext just before calling Engage, and
+        // LiftOff turns that into an actual recording.)
+        recording = false; FlightTag = "";
         escapeChoice = EscapeChoice.Ask; CloseEscapePrompt();
         predictedMax = destination == Destination.MaxOrbit || destination == Destination.CustomOrbit ? PredictMaxOrbit(out _) : -1;
         // Custom orbit from the pad: the pre-launch simulation already says
@@ -271,12 +283,20 @@ public sealed class Autopilot : MonoBehaviour
         planeNormalI = rocket.Launched && v.Length > 1000 ? Double3.Cross(ToI(r), ToI(v)).Normalized : ChoosePlane(r, Now);
         closedLoop = false; gammaCommand = 90;
         step = Step.Ascent;
+        // Fair-test reference: only a full ascent from the pad can be one
+        // (the replay starts on the pad too). The tag goes on before Launch
+        // so FlightRecorder, which opens its CSV on the first physics step
+        // after liftoff, already sees it.
+        var record = recordNext && !rocket.Launched;
+        recordNext = false;
+        if (record) FlightTag = "reference";
         if (!rocket.Launched)
         {
             if (TimeWarp.Rate > 1) TimeWarp.Request(1);
             assembly.Launch();
             if (!rocket.Launched) { Fail(assembly.Notice); return false; }
         }
+        if (record) StartRecording();
         Status = "Ascent";
         return true;
     }
@@ -287,6 +307,7 @@ public sealed class Autopilot : MonoBehaviour
     {
         if (step == Step.Idle) return;
         CloseEscapePrompt();   // unpauses the game if the escape question was open
+        DropRecording();
         step = Step.Idle;
         assembly.AutopilotSteering = false;
         if (warpedByAutopilot && TimeWarp.Rate > 1) TimeWarp.Request(1);
@@ -299,6 +320,7 @@ public sealed class Autopilot : MonoBehaviour
     // left as they are so a pilot can take over).
     private void Fail(string reason)
     {
+        DropRecording();
         step = Step.Failed;
         assembly.AutopilotSteering = false;
         Status = "Stopped: " + reason;
@@ -520,7 +542,7 @@ public sealed class Autopilot : MonoBehaviour
         if (PilotTookControl()) { Disengage("Off - pilot took control"); return; }
         ManageWarp();
         // Physics (and so the burn logic) is paused on rails: keep the countdown live.
-        if (TimeWarp.OnRails && step != Step.Ascent)
+        if (TimeWarp.OnRails && step != Step.Ascent && step != Step.Replay)
             Detail = planned ? NextBurnText() + " in " + TrajectoryDisplay.Clock(Math.Max(0, burnStart - Now))
                              : NextBurnText() + " planned in " + TrajectoryDisplay.Clock(Math.Max(0, replanAt - Now));
     }
@@ -553,16 +575,31 @@ public sealed class Autopilot : MonoBehaviour
     {
         if (!AutoWarp) return;
         float rate;
-        if (step == Step.Ascent || burning || (!planned && replanAt <= Now)) rate = 1;
+        // ×1 also for the whole of a fair-test reference or replay: warp
+        // changes the physics step (and rails skips it), and both flights
+        // must be integrated exactly the same way.
+        // Powered flight (ascent, burns, a fair-test reference or replay) and
+        // the last stretch before a burn run at PhysicsWarp (×10) instead of
+        // ×1. How that stays exact: physics warp only raises Time.timeScale,
+        // so Unity runs ten physics steps per unit of real time - each one
+        // still Time.fixedDeltaTime long, with the guidance, staging,
+        // gimbals and engines all run per step. The flight is computed step
+        // for step the same as at ×1, only sooner. (If the computer can't
+        // keep up, Unity runs fewer steps per frame: slower, not different.)
+        // Rails warp is different - it replaces the physics with a Kepler
+        // orbit - so it's kept to unpowered coasts, and never used for a
+        // fair-test flight, whose coasts must be integrated the same way too.
+        if (step == Step.Ascent || step == Step.Replay || recording || burning || (!planned && replanAt <= Now)) rate = PhysicsWarp;
         else
         {
             // Time that can be skipped: up to the moment to start turning
             // toward the burn, or to the next replanning.
             var wait = planned ? burnStart - Now - TurnLead : replanAt - Now;
-            // The fastest rails speed that still leaves ~3 s of real time to
-            // go (a slow frame at ×1,000,000 covers days).
-            rate = wait > 20 - (planned ? TurnLead : 0) ? 10 : 1;
-            foreach (var r in TimeWarp.Rates) if (r >= TimeWarp.RailsFrom && wait > 3 * r) rate = r;
+            // The fastest rails speed that still leaves ~2 s of real time to
+            // go (a slow frame at ×1,000,000 covers days); below that,
+            // physics warp, during which the rocket can still turn.
+            rate = PhysicsWarp;
+            foreach (var r in TimeWarp.Rates) if (r >= TimeWarp.RailsFrom && wait > 2 * r) rate = r;
         }
         if (rate == 1 && !warpedByAutopilot) return;
         if (Mathf.Approximately(TimeWarp.Rate, rate)) return;
@@ -585,8 +622,12 @@ public sealed class Autopilot : MonoBehaviour
         switch (step)
         {
             case Step.Ascent: Ascent(); break;
+            case Step.Replay: Replay(); break;
             default: Maneuver(); break;
         }
+        // Reference flight: store what this step commanded (Point and
+        // SetThrottle left it in lastDirection / lastThrottle).
+        if (recording) RecordSample();
     }
 
     // Asks SAS to point the nose along a direction (scene axes). How: the
@@ -598,6 +639,8 @@ public sealed class Autopilot : MonoBehaviour
     private void Point(Double3 directionScene)
     {
         if (directionScene.SqrLength < 1e-12) return;
+        // Remember the command for a fair-test recording (see RecordSample).
+        lastDirection = directionScene.Normalized;
         var direction = directionScene.Normalized.ToVector3();
         assembly.AutopilotAttitude = Quaternion.FromToRotation(transform.up, direction) * transform.rotation;
         assembly.AutopilotSteering = true;
@@ -624,6 +667,9 @@ public sealed class Autopilot : MonoBehaviour
     // engines if they're off, or shuts them down at 0.
     private void SetThrottle(float throttle)
     {
+        // Recorded as asked for, before the rules below: the replay calls
+        // SetThrottle with the same value, so the same rules apply again.
+        lastThrottle = throttle;
         if (assembly.StagingInProgress) return;   // separating / waiting to light
         if (throttle > 0) throttle = Mathf.Max(throttle, assembly.MinimumThrottle);
         if (throttle > 0 && LiquidSpent) return;
@@ -780,6 +826,9 @@ public sealed class Autopilot : MonoBehaviour
     private void Parked()
     {
         planned = burning = false; replanAt = -1;
+        // A fair-test reference ends here, in the parking orbit: write it to
+        // disk before Finish() / the next step can change anything.
+        if (recording) SaveRecording();
         if (Target == Destination.LowOrbit)
         {
             GetState(out var r, out var v);
@@ -2376,6 +2425,258 @@ public sealed class Autopilot : MonoBehaviour
         return true;
     }
 
+    // --- Fair test: same steering, different mass ------------------------------
+    //
+    // For comparing loads (payload, propellant): the guidance above re-plans
+    // the climb from the rocket's own state, so a heavier rocket is flown on
+    // a different path and the flights can't be compared. Instead:
+    //  * "Fly reference" flies a normal Low-orbit ascent and records, every
+    //    physics step, what the autopilot commanded: the nose direction and
+    //    the throttle, against seconds since liftoff. Saved when it parks.
+    //  * "Replay reference" (same rocket, any load) launches and commands
+    //    exactly that program again - same direction, same throttle at the
+    //    same second - ignoring where the rocket actually is. The inputs are
+    //    identical, so differences in the CSVs come from the load alone.
+    // Staging is still automatic (by the preset's times / empty tanks), as
+    // on the real rocket. Both flights run at ×10 physics warp at most
+    // (never rails), so they're integrated with identical steps.
+
+    // One recorded physics step: t = seconds since liftoff; direction = the
+    // commanded nose direction in the liftoff frame (scene axes frozen at
+    // liftoff - see ToLiftoff); throttle = what SetThrottle was asked for.
+    private struct ProgramSample { public double t; public Double3 direction; public float throttle; }
+
+    /// <summary>File-name tag for FlightRecorder's CSV ("reference",
+    /// "replay" or empty), so the test flights are easy to tell apart.</summary>
+    public static string FlightTag { get; private set; } = "";
+
+    private bool recordNext, recording;
+    private readonly List<ProgramSample> program = new();
+    private int programCursor;
+    private double liftoffNow, referenceMass;
+    private Double3 lastDirection;
+    private float lastThrottle = 1;
+    private string referenceInfo, referenceInfoFor;
+
+    // Where a rocket's reference lives: <project>/TestPrograms/ in the
+    // editor (outside Assets, so Unity doesn't import it and clearing
+    // Assets/Data leaves it alone), persistentDataPath in a build.
+    private string ReferencePath =>
+        Path.Combine(Application.isEditor ? Path.Combine(Application.dataPath, "..", "TestPrograms")
+                                          : Path.Combine(Application.persistentDataPath, "TestPrograms"),
+                     "Ascent reference " + (assembly.ActivePresetName ?? "Custom") + ".csv");
+
+    // Seconds since liftoff on the mission clock (the same clock that turns
+    // the Earth in ToI).
+    private double SinceLiftoff => Now - liftoffNow;
+    // Scene ↔ liftoff frame. The scene turns with the Earth; turning a
+    // scene vector back by the Earth's rotation since liftoff (rate × t,
+    // the same convention as ToI) gives fixed axes that match the pad at
+    // liftoff. Recorded in that frame, a direction means the same thing on
+    // any launch date.
+    private Double3 ToLiftoff(Double3 scene, double t) => scene.RotateAboutY(planet.RotationRate * t);
+    private Double3 FromLiftoff(Double3 frame, double t) => frame.RotateAboutY(-planet.RotationRate * t);
+
+    // Called by LiftOff right after Launch: clears the buffer and starts
+    // the clock; the liftoff mass is kept for the file's header.
+    private void StartRecording()
+    {
+        program.Clear();
+        recording = true;
+        liftoffNow = Now;
+        referenceMass = flight.TotalMass;
+        lastDirection = default; lastThrottle = 1;
+    }
+
+    // Called after each guidance step while recording: appends the step's
+    // commanded direction (converted to the liftoff frame) and throttle.
+    private void RecordSample()
+    {
+        if (lastDirection.SqrLength < 1e-12) return;   // nothing commanded yet
+        var t = SinceLiftoff;
+        program.Add(new ProgramSample { t = t, direction = ToLiftoff(lastDirection, t), throttle = lastThrottle });
+    }
+
+    // A reference that didn't reach the parking orbit is thrown away (the
+    // old reference stays), and the panel says so.
+    private void DropRecording()
+    {
+        if (!recording) return;
+        recording = false;
+        program.Clear();
+        Detail = "";
+        referenceInfoFor = null;   // re-read the panel line
+        Debug.Log("AUTOPILOT reference not saved: the ascent didn't reach orbit.");
+    }
+
+    // Writes the recording as CSV: '#' header lines (rocket, liftoff mass,
+    // the physics step, when) then one row per step: t, direction x y z,
+    // throttle. Invariant culture so '.' is always the decimal point; "R"
+    // round-trips the doubles exactly.
+    private void SaveRecording()
+    {
+        recording = false;
+        if (program.Count == 0) return;
+        var path = ReferencePath;
+        Directory.CreateDirectory(Path.GetDirectoryName(path));
+        var c = CultureInfo.InvariantCulture;
+        using (var w = new StreamWriter(path, false))
+        {
+            w.WriteLine("# rocket," + assembly.ActivePresetName);
+            w.WriteLine("# liftoffMass," + referenceMass.ToString("R", c));
+            w.WriteLine("# fixedDeltaTime," + Time.fixedDeltaTime.ToString("R", c));
+            w.WriteLine("# recorded," + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", c));
+            w.WriteLine("t,dx,dy,dz,throttle");
+            foreach (var p in program)
+                w.WriteLine(p.t.ToString("R", c) + "," + p.direction.x.ToString("R", c) + "," + p.direction.y.ToString("R", c) + "," +
+                            p.direction.z.ToString("R", c) + "," + p.throttle.ToString("R", c));
+        }
+        referenceInfoFor = null;
+        Debug.Log("AUTOPILOT reference saved: " + path + " (" + program.Count + " steps)");
+    }
+
+    // Reads ReferencePath into 'program' (and the header's liftoff mass and
+    // physics step). False with a reason if there's no usable file.
+    private bool LoadReference(out string problem, out double mass, out float dt)
+    {
+        program.Clear(); mass = 0; dt = 0; problem = null;
+        var path = ReferencePath;
+        if (!File.Exists(path)) { problem = "no reference for this rocket yet - fly one first."; return false; }
+        var c = CultureInfo.InvariantCulture;
+        foreach (var line in File.ReadLines(path))
+        {
+            var f = line.Split(',');
+            if (line.StartsWith("#"))
+            {
+                if (f[0] == "# liftoffMass") double.TryParse(f[1], NumberStyles.Float, c, out mass);
+                if (f[0] == "# fixedDeltaTime") float.TryParse(f[1], NumberStyles.Float, c, out dt);
+                continue;
+            }
+            if (f.Length < 5 || !double.TryParse(f[0], NumberStyles.Float, c, out var t)) continue;   // the column header
+            program.Add(new ProgramSample
+            {
+                t = t,
+                direction = new Double3(double.Parse(f[1], c), double.Parse(f[2], c), double.Parse(f[3], c)),
+                throttle = float.Parse(f[4], c)
+            });
+        }
+        if (program.Count == 0) { problem = "the reference file is empty."; return false; }
+        return true;
+    }
+
+    // "Replay reference": like Engage from the pad, but step = Replay. How:
+    // loads the program, resets the clock/frame and mission state as
+    // Engage does, turns SAS and auto-staging on, tags the CSV, launches,
+    // and starts the liftoff clock.
+    private void EngageReplay()
+    {
+        if (planet == null || flight == null || flight.Crashed || rocket.Launched) return;
+        if (!LoadReference(out var problem, out var mass, out var dt)) { Fail(problem); return; }
+        Target = Destination.LowOrbit;
+        mu = PlanetBody.UniversalGravitationalConstant * planet.Mass;
+        radius = planet.Radius;
+        origin = SolarSystem.Instance != null ? SolarSystem.Instance.DateAt(Time.time) : default;
+        fallbackClock = 0;
+        moonTrack = null;
+        planned = burning = false; replanAt = -1;
+        recording = recordNext = false;
+        escapeChoice = EscapeChoice.Ask; CloseEscapePrompt();
+        programCursor = 0;
+        assembly.EngageSas();
+        assembly.SetAutoStaging(true);
+        FlightTag = "replay";
+        step = Step.Replay;
+        if (TimeWarp.Rate > 1) TimeWarp.Request(1);
+        assembly.Launch();
+        if (!rocket.Launched) { Fail(assembly.Notice); return; }
+        liftoffNow = Now;
+        Status = "Fair test: replaying the reference · liftoff " + (flight.TotalMass / 1000).ToString("N1") + " t (reference " +
+                 (mass / 1000).ToString("N1") + " t)" +
+                 (dt > 0 && !Mathf.Approximately(dt, Time.fixedDeltaTime) ? " · WARNING: physics step differs from the reference's" : "");
+    }
+
+    // One physics step of a replay. How: t = seconds since liftoff; the
+    // cursor moves forward to the last recorded step at or before t (a
+    // quarter-step tolerance absorbs clock rounding, so on identical steps
+    // it lands exactly on the recorded one); the direction is interpolated
+    // toward the next sample (only matters if the steps don't line up),
+    // turned back from the liftoff frame into the scene and handed to
+    // Point(); the throttle is that sample's, sent through SetThrottle -
+    // the same calls, with the same values, the reference made. After the
+    // last sample: engines off and the result shown.
+    private void Replay()
+    {
+        var t = SinceLiftoff;
+        var tolerance = Time.fixedDeltaTime * .25;
+        var last = program[program.Count - 1];
+        GetState(out var r, out var v);
+        Elements(r, v, out var pe, out var ap, out _);
+        if (t > last.t + tolerance)
+        {
+            SetThrottle(0);
+            Finish("Fair test done · " + (pe - radius > 100000 ? "orbit " + OrbitText(r, v)
+                   : "no orbit · high point " + TrajectoryDisplay.Km(ap - radius) + " · low point " + TrajectoryDisplay.Km(pe - radius)));
+            return;
+        }
+        while (programCursor + 1 < program.Count && program[programCursor + 1].t <= t + tolerance) programCursor++;
+        var a = program[programCursor];
+        var direction = a.direction;
+        if (programCursor + 1 < program.Count && t > a.t + tolerance)
+        {
+            var b = program[programCursor + 1];
+            var k = Math.Min(1, (t - a.t) / Math.Max(1e-9, b.t - a.t));
+            direction = (a.direction * (1 - k) + b.direction * k).Normalized;
+        }
+        if (t >= program[0].t - tolerance) Point(FromLiftoff(direction, t));
+        SetThrottle(a.throttle);
+        Detail = "Same steering as the reference · T+" + TrajectoryDisplay.Clock(Math.Max(0, t)) + " of " +
+                 TrajectoryDisplay.Clock(last.t) + " · Ap " + TrajectoryDisplay.Km(ap - radius) + " · Pe " + TrajectoryDisplay.Km(Math.Max(0, pe - radius));
+    }
+
+    // The fair-test rows in the AUTOPILOT box: a line about the saved
+    // reference (re-read only when the rocket changes or a reference is
+    // saved/dropped - reading the file every frame would be wasteful), and
+    // the two buttons, usable on the pad.
+    private void FairTestGUI()
+    {
+        GUILayout.Label("Fair test (same steering, any load)", boxText);
+        var key = assembly.ActivePresetName ?? "";
+        if (referenceInfoFor != key)
+        {
+            referenceInfoFor = key;
+            referenceInfo = "No reference for this rocket yet.";
+            try
+            {
+                if (File.Exists(ReferencePath))
+                {
+                    string when = "?", mass = "?", duration = "?";
+                    string lastLine = null;
+                    foreach (var line in File.ReadLines(ReferencePath))
+                    {
+                        if (line.StartsWith("# recorded,")) when = line.Substring(11);
+                        else if (line.StartsWith("# liftoffMass,") && double.TryParse(line.Substring(14), NumberStyles.Float, CultureInfo.InvariantCulture, out var m))
+                            mass = (m / 1000).ToString("N1") + " t";
+                        else if (line.Length > 0 && !line.StartsWith("#")) lastLine = line;
+                    }
+                    if (lastLine != null && double.TryParse(lastLine.Split(',')[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var end))
+                        duration = TrajectoryDisplay.Clock(end);
+                    referenceInfo = "Reference: liftoff " + mass + ", " + duration + " to orbit, flown " + when;
+                }
+            }
+            catch (IOException) { referenceInfo = "Reference file unreadable."; }
+        }
+        GUILayout.Label(recording ? "Recording the reference…" : referenceInfo, boxText);
+        GUI.enabled = !rocket.Launched && !Engaged;
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Button(new GUIContent("Fly reference", "Fly a normal ascent to low orbit and save its steering and throttle, second by second, as this rocket's reference (replaces the old one when it reaches orbit).")))
+        { recordNext = true; Engage(Destination.LowOrbit); }
+        if (Button(new GUIContent("Replay reference", "Launch with whatever load is set now and fly exactly the reference's steering and throttle against time since liftoff - no re-planning - so only the load differs."),
+                   step == Step.Replay))
+            EngageReplay();
+        GUILayout.EndHorizontal();
+        GUI.enabled = true;
+    }
+
     // --- Panel -----------------------------------------------------------------------
 
     private GUIStyle boxTitle, boxText;
@@ -2402,7 +2703,7 @@ public sealed class Autopilot : MonoBehaviour
         const float w = 300;
         var x = Screen.width - w - 16;
         var y = 84f;
-        GUILayout.BeginArea(new Rect(x, y, w, 330), GUI.skin.box);   // 330: room for the custom-height row
+        GUILayout.BeginArea(new Rect(x, y, w, 420), GUI.skin.box);   // 420: room for the custom-height and fair-test rows
         GUILayout.Label("AUTOPILOT" + (Engaged ? " · ON" : ""), boxTitle);
         GUILayout.Label("Orbit", boxText);
         GUILayout.BeginHorizontal();
@@ -2434,6 +2735,7 @@ public sealed class Autopilot : MonoBehaviour
         if (Button("Moon", Engaged && Target == Destination.Moon)) Engage(Destination.Moon);
         if (Button("Off", !Engaged)) Disengage();
         GUILayout.EndHorizontal();
+        FairTestGUI();
         if (!Engaged && Time.unscaledTime >= nextPrediction)
         {
             nextPrediction = Time.unscaledTime + 1;
@@ -2446,7 +2748,7 @@ public sealed class Autopilot : MonoBehaviour
         if (!Engaged && prediction != null) GUILayout.Label(prediction, boxText);
         if (!string.IsNullOrEmpty(Status)) GUILayout.Label(Status, boxText);
         if (Engaged && !string.IsNullOrEmpty(Detail)) GUILayout.Label(Detail, boxText);
-        AutoWarp = GUILayout.Toggle(AutoWarp, " Time warp through coasts");
+        AutoWarp = GUILayout.Toggle(AutoWarp, new GUIContent(" Time warp (×10 powered, rails on coasts)", "Powered flight runs at ×10 physics warp - the same physics steps as ×1, just faster. Coasts go on rails up to ×1,000,000."));
         if (!Engaged && step == Step.Idle)
             GUILayout.Label(rocket.Launched ? "Takes over from here." : "Launches now and flies the whole way.", boxText);
         GUILayout.EndArea();

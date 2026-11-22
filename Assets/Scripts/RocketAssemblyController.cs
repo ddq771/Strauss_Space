@@ -1482,6 +1482,16 @@ public sealed class RocketAssemblyController : MonoBehaviour
         var heat=CurrentHeatProtection;
         flight.SetEntryAerodynamics(heat.ToLocal(RocketPresets.HeatZone.Windward),heat.liftToDrag,heat.planformArea);
         if(rocket.Launched)UpdateFlightGimbals();
+        // Staging is checked every physics step rather than every rendered
+        // frame. How: UpdateStaging compares flight.MissionTime (which only
+        // advances in physics steps) with the drop / separation / ignition
+        // times. Run per frame, the check landed on whichever step a frame
+        // happened to follow - so the same flight staged a little earlier or
+        // later depending on the frame rate, and under physics time warp
+        // (several physics steps per frame) up to a second late. Per step,
+        // a stage always separates on the same step, at any frame rate or
+        // warp, so repeated test flights stay comparable.
+        if(rocket.Launched)UpdateStaging();
     }
 
     private float rollCommand;            // degrees of differential gimbal
@@ -1847,7 +1857,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         if(rocket.Launched)
         {
             HandleStageKey();
-            UpdateStaging();
+            // UpdateStaging now runs in FixedUpdate (see there).
             ReadFlightInput();
             UpdateFlightThrottle();
             return;
