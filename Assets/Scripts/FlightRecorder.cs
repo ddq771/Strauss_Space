@@ -41,7 +41,10 @@ public sealed class FlightRecorder : MonoBehaviour
     private const int StageGapLines = 3;
 
     [Tooltip("Seconds of simulated flight time between CSV rows.")]
-    [SerializeField] private float sampleInterval = 2f;
+    // 3 s of game time per row. The clock adds each physics step's own
+    // simulated length (× the rails multiplier), so warp changes how fast
+    // rows arrive in real time, never their spacing in game time.
+    [SerializeField] private float sampleInterval = 3f;
 
     private Rocket rocket;
     private RocketFlightModel flight;
@@ -113,7 +116,7 @@ public sealed class FlightRecorder : MonoBehaviour
             End();
         }
         // Half-step tolerance: summing a float fixedDeltaTime drifts just
-        // under the 2 s mark and would otherwise land each row a step late.
+        // under each 3 s mark and would otherwise land each row a step late.
         else if (elapsed + dt * 0.5 >= nextSample)
         {
             WriteRow();

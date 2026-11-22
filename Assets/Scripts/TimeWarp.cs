@@ -2,7 +2,7 @@ using System;
 using UnityEngine;
 
 /// <summary>
-/// Simulation speed. Up to ×10 the physics simply runs faster
+/// Simulation speed. Up to ×50 the physics simply runs faster
 /// (Time.timeScale). ×100 up to ×1,000,000 are "on rails", as in KSP: thousands of
 /// physics steps a second would be far too slow (and Unity caps timeScale at
 /// 100), so the rocket is taken off physics and moved along its exact
@@ -20,7 +20,7 @@ using UnityEngine;
 /// </summary>
 public sealed class TimeWarp : MonoBehaviour
 {
-    public static readonly float[] Rates = { 1, 2, 5, 10, 100, 1000, 10000, 100000, 1000000 };
+    public static readonly float[] Rates = { 1, 2, 5, 10, 25, 50, 100, 1000, 10000, 100000, 1000000 };
     public const float RailsFrom = 100f;
     private const double AtmosphereTop = 100000;   // m
     // The rails step is the frame's whole time (Unity already caps
@@ -31,6 +31,9 @@ public sealed class TimeWarp : MonoBehaviour
     private const double MoonStopAltitude = 10000; // m above the Moon
 
     public static float Rate { get; private set; } = 1;
+    // Unity's usual cap on one frame's game time (Project Settings > Time >
+    // Maximum Allowed Timestep), restored whenever physics warp ends.
+    private const float DefaultMaxDeltaTime = 1f / 3;
     public static bool OnRails => Rate >= RailsFrom;
     /// <summary>Why the last request was refused or warp stopped (shown in the flight panel).</summary>
     public static string Message { get; private set; }
@@ -89,6 +92,17 @@ public sealed class TimeWarp : MonoBehaviour
         if (rate < RailsFrom) LeaveRails();
         Rate = rate;
         Time.timeScale = rate < RailsFrom ? rate : 1f;
+        // Physics warp: let one rendered frame cover more game time. How:
+        // Unity runs FixedUpdate until the physics clock catches up with the
+        // frame's scaled time, but never lets that time exceed
+        // Time.maximumDeltaTime (⅓ s by default). At 30 fps × 10 a frame
+        // already needs ⅓ s, so ×25 / ×50 would gain nothing. Raising the cap
+        // to 0.05 s × rate (2.5 s = 125 physics steps a frame at ×50) lets
+        // the CPU set the pace instead. The steps themselves are unchanged
+        // (still Time.fixedDeltaTime each), so the results are the same as
+        // at ×1. At ×1 and on rails the default cap comes back - the rails
+        // step is the frame's whole (capped) time, which must stay short.
+        Time.maximumDeltaTime = rate > 1 && rate < RailsFrom ? Mathf.Max(DefaultMaxDeltaTime, .05f * rate) : DefaultMaxDeltaTime;
         if (rate >= RailsFrom && rocket.Launched) EnterRails();
         return true;
     }
@@ -97,8 +111,8 @@ public sealed class TimeWarp : MonoBehaviour
     {
         if (planet == null) return "No planet to orbit.";
         if (flight.Crashed) return "The vehicle has crashed.";
-        if (rocket.EngineEnabled || flight.SolidBurning) return "Time warp above ×10 needs the engines off - cut the throttle (X) first.";
-        if (flight.Altitude < AtmosphereTop) return "Time warp above ×10 needs altitude above 100 km (out of the atmosphere).";
+        if (rocket.EngineEnabled || flight.SolidBurning) return "Time warp above ×50 needs the engines off - cut the throttle (X) first.";
+        if (flight.Altitude < AtmosphereTop) return "Time warp above ×50 needs altitude above 100 km (out of the atmosphere).";
         return null;
     }
 
@@ -328,7 +342,7 @@ public sealed class TimeWarp : MonoBehaviour
         else { s = 1.0 / 6; c = .5; }
     }
 
-    private void OnDisable() { LeaveRails(); Rate = 1; Time.timeScale = 1; }
+    private void OnDisable() { LeaveRails(); Rate = 1; Time.timeScale = 1; Time.maximumDeltaTime = DefaultMaxDeltaTime; }
 
     // Double-precision vector for metre-scale orbit maths.
     private readonly struct Vector3d

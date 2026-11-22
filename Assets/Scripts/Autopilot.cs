@@ -137,7 +137,7 @@ public sealed class Autopilot : MonoBehaviour
     private const double TransferApogeeFactor = 1.25;       // translunar apogee / the Moon's distance
     private const float PitchRate = 1.5f;                   // deg/s, closed-loop pitch changes
     private const float AlignedDegrees = 6;                 // pointing error at which a burn may light
-    private const float PhysicsWarp = 10;                   // × while powered / turning (exact - see ManageWarp)
+    private const float PhysicsWarp = 50;                   // × while powered / turning (exact - see ManageWarp)
 
     private RocketAssemblyController assembly;
     private Rocket rocket;
@@ -522,7 +522,7 @@ public sealed class Autopilot : MonoBehaviour
             if (AutoWarp)
             {
                 var rate = wait > 20 ? 10f : 1f;
-                foreach (var r in TimeWarp.Rates) if (r >= TimeWarp.RailsFrom && wait > 3 * r) rate = r;
+                foreach (var r in TimeWarp.Rates) if (r >= TimeWarp.RailsFrom && wait > r) rate = r;
                 if (!Mathf.Approximately(TimeWarp.Rate, rate)) TimeWarp.Request(rate);
             }
             if (wait <= 0)
@@ -565,9 +565,10 @@ public sealed class Autopilot : MonoBehaviour
     // ascent, a burn, or a due replanning it wants ×1; otherwise the wait is
     // the time until it must start turning toward the next burn (burnStart −
     // TurnLead) or until the next replanning. It then takes the fastest
-    // rails rate r with wait > 3·r - i.e. at least ~3 s of real time left at
-    // that speed, so even a slow frame can't jump past the event - or ×10
-    // physics warp for the last stretch, when the vehicle must still be able
+    // rails rate r with wait > r - i.e. at least ~1 s of real time left at
+    // that speed (30 frames at 30 fps, and a frame is capped at ⅓ s, so even
+    // a slow one can't jump past the event) - or ×50 physics warp for the
+    // last stretch, when the vehicle must still be able
     // to turn. It only touches the rate when it started the warp itself or
     // wants a different one, and retries a refused rails request (e.g. below
     // 100 km) at most twice a second.
@@ -579,9 +580,9 @@ public sealed class Autopilot : MonoBehaviour
         // changes the physics step (and rails skips it), and both flights
         // must be integrated exactly the same way.
         // Powered flight (ascent, burns, a fair-test reference or replay) and
-        // the last stretch before a burn run at PhysicsWarp (×10) instead of
+        // the last stretch before a burn run at PhysicsWarp (×50) instead of
         // ×1. How that stays exact: physics warp only raises Time.timeScale,
-        // so Unity runs ten physics steps per unit of real time - each one
+        // so Unity runs fifty physics steps per unit of real time - each one
         // still Time.fixedDeltaTime long, with the guidance, staging,
         // gimbals and engines all run per step. The flight is computed step
         // for step the same as at ×1, only sooner. (If the computer can't
@@ -595,11 +596,11 @@ public sealed class Autopilot : MonoBehaviour
             // Time that can be skipped: up to the moment to start turning
             // toward the burn, or to the next replanning.
             var wait = planned ? burnStart - Now - TurnLead : replanAt - Now;
-            // The fastest rails speed that still leaves ~2 s of real time to
+            // The fastest rails speed that still leaves ~1 s of real time to
             // go (a slow frame at ×1,000,000 covers days); below that,
             // physics warp, during which the rocket can still turn.
             rate = PhysicsWarp;
-            foreach (var r in TimeWarp.Rates) if (r >= TimeWarp.RailsFrom && wait > 2 * r) rate = r;
+            foreach (var r in TimeWarp.Rates) if (r >= TimeWarp.RailsFrom && wait > r) rate = r;
         }
         if (rate == 1 && !warpedByAutopilot) return;
         if (Mathf.Approximately(TimeWarp.Rate, rate)) return;
@@ -2438,7 +2439,7 @@ public sealed class Autopilot : MonoBehaviour
     //    same second - ignoring where the rocket actually is. The inputs are
     //    identical, so differences in the CSVs come from the load alone.
     // Staging is still automatic (by the preset's times / empty tanks), as
-    // on the real rocket. Both flights run at ×10 physics warp at most
+    // on the real rocket. Both flights run at ×50 physics warp at most
     // (never rails), so they're integrated with identical steps.
 
     // One recorded physics step: t = seconds since liftoff; direction = the
@@ -2748,7 +2749,7 @@ public sealed class Autopilot : MonoBehaviour
         if (!Engaged && prediction != null) GUILayout.Label(prediction, boxText);
         if (!string.IsNullOrEmpty(Status)) GUILayout.Label(Status, boxText);
         if (Engaged && !string.IsNullOrEmpty(Detail)) GUILayout.Label(Detail, boxText);
-        AutoWarp = GUILayout.Toggle(AutoWarp, new GUIContent(" Time warp (×10 powered, rails on coasts)", "Powered flight runs at ×10 physics warp - the same physics steps as ×1, just faster. Coasts go on rails up to ×1,000,000."));
+        AutoWarp = GUILayout.Toggle(AutoWarp, new GUIContent(" Time warp (×50 powered, rails on coasts)", "Powered flight runs at ×50 physics warp - the same physics steps as ×1, just faster. Coasts go on rails up to ×1,000,000."));
         if (!Engaged && step == Step.Idle)
             GUILayout.Label(rocket.Launched ? "Takes over from here." : "Launches now and flies the whole way.", boxText);
         GUILayout.EndArea();

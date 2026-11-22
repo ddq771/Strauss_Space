@@ -1890,7 +1890,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         return true;
     }
 
-    // Simulation speed buttons: ×1-×10 run the physics faster; ×100/×1000
+    // Simulation speed buttons: ×1-×50 run the physics faster; ×100/×1000
     // warp on rails (see TimeWarp) - only coasting above 100 km in flight,
     // or on the pad to fast-forward the clock.
     private void TimeWarpControls()
