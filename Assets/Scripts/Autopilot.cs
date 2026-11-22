@@ -170,6 +170,9 @@ public sealed class Autopilot : MonoBehaviour
 
     // Ascent.
     private bool closedLoop;
+    // Upper-ascent guidance (linear-tangent steering, AscentGuidance), with
+    // its hand-over and fallback rules - see GuidedClimb. New every liftoff.
+    private GuidedClimb climb = new();
     private float gammaCommand = 90, gammaLatch;
 
     // The planned burn.
@@ -282,6 +285,7 @@ public sealed class Autopilot : MonoBehaviour
     {
         planeNormalI = rocket.Launched && v.Length > 1000 ? Double3.Cross(ToI(r), ToI(v)).Normalized : ChoosePlane(r, Now);
         closedLoop = false; gammaCommand = 90;
+        climb = new GuidedClimb();
         step = Step.Ascent;
         // Fair-test reference: only a full ascent from the pad can be one
         // (the replay starts on the pad too). The tag goes on before Launch
@@ -734,8 +738,11 @@ public sealed class Autopilot : MonoBehaviour
         // last stage flying, as after a core stage burnt to depletion): coast
         // up there and finish the orbit with a prograde burn - cheaper than
         // holding altitude against gravity on a weak upper stage.
+        // (Not while the linear-tangent guidance flies: it is already steering
+        // the burn to end exactly in the circular orbit, which beats the
+        // coast-and-circularise route.)
         Elements(r, v, out _, out _, out var energy);
-        if (lastStage && ap - radius >= AscentAltitude - 5000 && altitude > 120000 &&
+        if (!climb.Active && lastStage && ap - radius >= AscentAltitude - 5000 && altitude > 120000 &&
             Math.Sqrt(Math.Max(0, 2 * (energy + mu / ap))) >= .9 * Math.Sqrt(mu / ap))
         {
             SetThrottle(0);
@@ -763,7 +770,23 @@ public sealed class Autopilot : MonoBehaviour
             if (altitude > ClosedLoopFrom) { closedLoop = true; gammaLatch = Mathf.Max(gammaCommand, 15); }
         }
         else gamma = gammaCommand;
-        if (closedLoop)
+        // Above the thick air: the linear-tangent guidance, if it has a
+        // solution (GuidedClimb.Pitch decides, from the hand-over rules, and
+        // returns false while it shouldn't or can't fly). Its inputs: the
+        // clock, radius, vertical speed, horizontal inertial speed along the
+        // target plane, the target radius, height, dynamic pressure, whether
+        // solid boosters still burn, whether the engines are off (staging -
+        // the solution is held, not re-solved), and the burns still to come.
+        // The pitch it wants is approached at PitchRate like the rest.
+        var q = flight.DynamicPressure;
+        if (altitude >= VerticalRise &&
+            climb.Pitch(Now, mu, r.Length, vz, Double3.Dot(horizontal, along), target, altitude, q,
+                        flight.SolidBurning, assembly.StagingInProgress || !Thrusting, RuntimeBurnPlan, out var guidedGamma))
+        {
+            closedLoop = true;   // the old law takes over from here if the guidance gives up
+            gamma = Mathf.MoveTowards(gammaCommand, (float)guidedGamma, PitchRate * Time.fixedDeltaTime);
+        }
+        else if (closedLoop)
         {
             var vh = horizontal.Length;
             // Net downward pull: gravity μ/r² less the "centrifugal" share
@@ -804,7 +827,6 @@ public sealed class Autopilot : MonoBehaviour
         // wanted direction is further off than that, it's swung back toward
         // the airflow (Slerp) until it sits exactly at the limit.
         var air = new Double3(flight.GroundVelocity);
-        var q = flight.DynamicPressure;
         if (altitude >= VerticalRise && air.Length > 30 && q > 500)
         {
             var limit = Mathf.Lerp(10f, 2f, Mathf.InverseLerp(1000f, 15000f, (float)q));
@@ -817,7 +839,8 @@ public sealed class Autopilot : MonoBehaviour
         SetThrottle(1);
 
         Status = "Ascent to " + TrajectoryDisplay.Km(AscentAltitude) + (Target == Destination.CustomOrbit && AscentAltitude >= CustomAltitude ? " orbit" : " parking orbit");
-        Detail = (closedLoop ? "Closed-loop guidance" : altitude < VerticalRise ? "Vertical rise" : "Gravity turn") +
+        Detail = (climb.Active ? "Linear-tangent guidance · cutoff in " + TrajectoryDisplay.Clock(Math.Max(0, climb.Solver.TimeToGo(Now)))
+                  : closedLoop ? "Closed-loop guidance" : altitude < VerticalRise ? "Vertical rise" : "Gravity turn") +
                  " · pitch " + gamma.ToString("F0") + "° · Ap " + TrajectoryDisplay.Km(ap - radius) + " · Pe " + TrajectoryDisplay.Km(Math.Max(0, pe - radius));
     }
 
@@ -1525,7 +1548,7 @@ public sealed class Autopilot : MonoBehaviour
             // High point at the target and a short burn left at the top:
             // coast up and round the orbit off there, Δv = circular speed
             // √(μ/r_ap) minus the speed it will have there, √(2(ε + μ/r_ap)).
-            if (lastStage && ap - radius >= ParkingAltitude - 5000 && altitude > 120000 && !double.IsInfinity(ap))
+            if (!pitch.Guided && lastStage && ap - radius >= ParkingAltitude - 5000 && altitude > 120000 && !double.IsInfinity(ap))
             {
                 var vAp = Math.Sqrt(Math.Max(0, 2 * (energy + mu / ap)));
                 if (vAp >= .9 * Math.Sqrt(mu / ap))
@@ -1598,7 +1621,12 @@ public sealed class Autopilot : MonoBehaviour
             var density = StandardAtmosphere.Density(pressure, StandardAtmosphere.TemperatureKelvin(Math.Max(0, altitude)));
             double dirX, dirY;
             if (safeOrbit) { var vs = Math.Sqrt(speed2); dirX = vx / vs; dirY = vy / vs; }
-            else pitch.Direction(this, ux, uy, ax, ay, vx, vy, rl, altitude, target, mass > 0 ? thrust / mass : 0,
+            else pitch.Direction(this, t, k == 0 && solidCount > 0 && solidLeft > 0, t < coastUntil || thrust <= 0,
+                                 // The burns still to come, for the guidance - built from the sim's own
+                                 // stage variables the same way RuntimeBurnPlan builds them in flight.
+                                 () => BurnPlan(k, stageClock, mass, propellant, engines, sockets, engineCutoffs,
+                                                cutoffAt, throttleProgram, pressure),
+                                 ux, uy, ax, ay, vx, vy, rl, altitude, target, mass > 0 ? thrust / mass : 0,
                                  airX, airY, airSpeed, .5 * density * airSpeed * airSpeed, out dirX, out dirY);
 
             // Accelerations: gravity, thrust/mass, drag/mass (the vehicle's own
@@ -1677,6 +1705,155 @@ public sealed class Autopilot : MonoBehaviour
         return false;
     }
 
+    // --- Upper-ascent guidance: hand-over, fallback, and the burn list ---------
+
+    private const double HandoverPressure = 1000;   // Pa of dynamic pressure: air thin enough to steer freely
+    private const double GiveUpAfter = 5;           // s of failed solutions (once flying) before the old law takes over
+    private const double FirstSolutionWithin = 20;  // s from hand-over to find a first solution, or give up
+
+    /// <summary>
+    /// When the linear-tangent guidance (AscentGuidance) flies the climb, and
+    /// when it hands back to the older climb law. Shared by Ascent() and the
+    /// pre-launch simulation, so both fly the same way. Rules:
+    ///  * hand-over: above ClosedLoopFrom (35 km), dynamic pressure below
+    ///    HandoverPressure (1 kPa) - the air no longer forces the nose along
+    ///    the airflow - and no solid boosters still burning (their thrust
+    ///    and mass fall away soon, which the burn list doesn't model);
+    ///  * from then on it solves once a second (AscentGuidance.Due); while
+    ///    the engines are off between stages it doesn't re-solve, it keeps
+    ///    following the last solution, whose plan already includes the gap;
+    ///  * a solution once found keeps it flying (Active); if solutions then
+    ///    fail for GiveUpAfter (5) s in a row - the rocket can't make the
+    ///    orbit after all - it gives up for good and the old law flies on.
+    ///    Brief failures are bridged by following the last good solution, so
+    ///    a borderline rocket doesn't flip between the two;
+    ///  * no solution within FirstSolutionWithin (20) s of the hand-over:
+    ///    gives up too (the rocket is too weak for a direct climb; the old
+    ///    law's coast-up-and-circularise is its best chance).
+    /// </summary>
+    private sealed class GuidedClimb
+    {
+        public readonly AscentGuidance Solver = new();
+        public bool Active { get; private set; }
+        private bool gaveUp;
+        private double failingSince = -1, firstTry = -1;
+
+        /// <summary>The pitch (degrees above the horizon) the guidance wants
+        /// now; false while it isn't flying (before the hand-over, or after
+        /// giving up). See the class summary for the rules.</summary>
+        public bool Pitch(double now, double mu, double r, double vz, double vh, double rTarget, double altitude, double q,
+                          bool solids, bool coasting, Func<List<AscentGuidance.Burn>> plan, out double gammaDeg)
+        {
+            gammaDeg = 0;
+            if (gaveUp) return false;
+            if (!Active && (altitude < ClosedLoopFrom || q > HandoverPressure || solids)) return false;
+            // The burn list is only built when a solution is due (once a second).
+            if (!coasting && Solver.Due(now))
+            {
+                if (firstTry < 0) firstTry = now;
+                if (Solver.Update(now, mu, r, vz, vh, rTarget, plan())) { Active = true; failingSince = -1; }
+                else if (Active) { if (failingSince < 0) failingSince = now; if (now - failingSince >= GiveUpAfter) gaveUp = true; }
+                else if (now - firstTry >= FirstSolutionWithin) gaveUp = true;
+            }
+            if (gaveUp) { Active = false; return false; }
+            if (!Active) return false;
+            gammaDeg = Math.Asin(Solver.SinPitch(now)) * Mathf.Rad2Deg;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// The burns still to come, in flight: BurnPlan with the rocket's present
+    /// stage, clock, mass, usable propellant, installed engines, its flight
+    /// programme (engine cutoffs and throttle limits - the first stage's from
+    /// the preset, an upper stage's from its spec), its programmed cutoff
+    /// (flight.MecoTime, 0 once the last stage may burn on) and the air
+    /// pressure outside.
+    /// </summary>
+    private List<AscentGuidance.Burn> RuntimeBurnPlan()
+    {
+        FirstStageEngines(out var engines, out var sockets);   // the stage flying now (sockets as installed)
+        var k = assembly.StageIndex;
+        var preset = assembly.IsPreset ? RocketPresets.All[assembly.PresetIndex] : default;
+        var staged = assembly.IsPreset && preset.Staged;
+        var cutoffs = !assembly.IsPreset ? null : k == 0 ? preset.engineCutoffs : staged && k - 1 < preset.upperStages.Length ? preset.upperStages[k - 1].engineCutoffs : null;
+        var program = assembly.IsPreset && k == 0 ? preset.throttleProgram : null;
+        var propellant = Usable(flight.FuelRemaining, flight.OxidizerRemaining, Engine(i => engines[i], engines.Length));
+        return BurnPlan(k, flight.StageBurnTime, flight.TotalMass, propellant, engines, sockets, cutoffs,
+                        flight.MecoTime, program, flight.Pressure);
+    }
+
+    /// <summary>
+    /// The guidance's list of burns from now to the last stage's empty tanks.
+    /// How:
+    ///  * the stage burning now (index k), from its present state: stepping
+    ///    through its flight programme from 'stageClock' (s since it lit),
+    ///    one Burn per stretch with the same engines running and the same
+    ///    throttle - a new stretch at each engine cutoff and each throttle-
+    ///    programme point. Each stretch's thrust and mass flow come from the
+    ///    engine model (EnginePerformance.Evaluate, at the pressure outside
+    ///    and the programme's throttle). A stretch ends at the next event, or
+    ///    when the propellant runs out (propellant ÷ flow), or at the stage's
+    ///    programmed cutoff - except on the last stage, which may burn to
+    ///    empty (as the autopilot relights it);
+    ///  * then each later stage of a preset the same way, from its spec: full
+    ///    tanks, its engines at full throttle in vacuum, starting mass
+    ///    StackMass (it and everything above, fully loaded, plus payload),
+    ///    after a gap of its separation + ignition delays.
+    /// Parts dropped mid-burn (interstages, escape towers) are left out -
+    /// small, and the solution is redone each second from the real mass.
+    /// </summary>
+    private List<AscentGuidance.Burn> BurnPlan(int k, double stageClock, double mass, double propellant,
+        EngineParameters[] engines, int[] sockets, float[] cutoffs, double cutoffAt, float[] throttleProgram, double pressure)
+    {
+        var plan = new List<AscentGuidance.Burn>();
+        var preset = assembly.IsPreset ? RocketPresets.All[assembly.PresetIndex] : default;
+        var stageCount = assembly.IsPreset && preset.Staged ? preset.upperStages.Length + 1 : 1;
+        AddStage(plan, 0, stageClock, mass, propellant, engines, sockets, cutoffs,
+                 k < stageCount - 1 ? cutoffAt : 0, throttleProgram, pressure);
+        for (var j = k + 1; j < stageCount; j++)
+        {
+            var spec = preset.upperStages[j - 1];
+            var e = Array.ConvertAll(spec.engines, EnginePerformance.Reference);
+            var s = new int[e.Length];
+            for (var i = 0; i < s.Length; i++) s[i] = i;
+            AddStage(plan, spec.separationDelay + spec.ignitionDelay, 0, StackMass(preset, j),
+                     Usable(spec.fuelMass, spec.oxidizerMass, Engine(i => e[i], e.Length)), e, s, spec.engineCutoffs,
+                     j < stageCount - 1 ? spec.burnSeconds : 0, null, 0);
+        }
+        return plan;
+    }
+
+    // One stage's stretches for BurnPlan (see there). 'gap' goes before the
+    // first stretch; cutoffAt 0 = burn to empty.
+    private static void AddStage(List<AscentGuidance.Burn> plan, double gap, double clock, double mass, double propellant,
+        EngineParameters[] engines, int[] sockets, float[] cutoffs, double cutoffAt, float[] throttleProgram, double pressure)
+    {
+        var stop = cutoffAt > 0 ? cutoffAt : double.MaxValue;
+        for (var guard = 0; guard < 32 && propellant > 1 && clock < stop; guard++)
+        {
+            // Thrust and flow of the engines still running, at this throttle.
+            var throttle = Math.Min(1, ProgramThrottleAt(throttleProgram, clock));
+            double thrust = 0, flow = 0;
+            for (var i = 0; i < engines.Length; i++)
+            {
+                if (engines[i] == null || EngineCutAt(cutoffs, sockets[i], clock)) continue;
+                var r = EnginePerformance.Evaluate(engines[i], throttle, pressure);
+                if (!r.valid) continue;
+                thrust += r.thrust; flow += r.massFlow;
+            }
+            if (flow <= 0 || thrust <= 0) break;
+            // The next event: an engine cutoff or programme point still ahead.
+            var next = stop;
+            if (cutoffs != null) for (var i = 0; i + 1 < cutoffs.Length; i += 2) if (cutoffs[i] > clock + 1e-6) next = Math.Min(next, cutoffs[i]);
+            if (throttleProgram != null) for (var i = 0; i + 1 < throttleProgram.Length; i += 2) if (throttleProgram[i] > clock + 1e-6) next = Math.Min(next, throttleProgram[i]);
+            var duration = Math.Min(next - clock, propellant / flow);
+            plan.Add(new AscentGuidance.Burn { gap = gap, thrust = thrust, flow = flow, duration = duration, mass = mass });
+            gap = 0;
+            clock += duration; propellant -= flow * duration; mass -= flow * duration;
+        }
+    }
+
     /// <summary>
     /// The ascent's pitch program for the simulation, in 2-D - the same laws
     /// as Ascent() (see there for the reasoning): straight up to VerticalRise;
@@ -1693,9 +1870,15 @@ public sealed class Autopilot : MonoBehaviour
         private bool closedLoop;
         private double command = 90, latch;
         private readonly double steepness;   // scales the open-loop pitch-over (1 = Ascent()'s)
+        // The same upper-ascent guidance and hand-over rules as Ascent().
+        private readonly GuidedClimb climb = new();
+        public bool Guided => climb.Active;
         public SimPitch(double steepness) => this.steepness = steepness;
 
-        public void Direction(Autopilot a, double ux, double uy, double ax, double ay, double vx, double vy, double rl,
+        // t: sim clock (s); solids: boosters still burning; coasting: engines
+        // off (staging); plan: builds the burns still to come.
+        public void Direction(Autopilot a, double t, bool solids, bool coasting, Func<List<AscentGuidance.Burn>> plan,
+                              double ux, double uy, double ax, double ay, double vx, double vy, double rl,
                               double altitude, double target, double thrustAccel, double airX, double airY, double airSpeed,
                               double q, out double dirX, out double dirY)
         {
@@ -1714,7 +1897,14 @@ public sealed class Autopilot : MonoBehaviour
                 if (altitude > ClosedLoopFrom) { closedLoop = true; latch = Math.Max(command, 15); }
             }
             else gamma = command;
-            if (closedLoop)
+            // The guidance first, as in Ascent() (vhSigned: horizontal speed
+            // along the direction of flight, the "east" axis here).
+            if (altitude >= VerticalRise && climb.Pitch(t, a.mu, rl, vz, vhSigned, target, altitude, q, solids, coasting, plan, out var guided))
+            {
+                closedLoop = true;
+                gamma = Mathf.MoveTowards((float)command, (float)guided, (float)(PitchRate * SimStep));
+            }
+            else if (closedLoop)
             {
                 var gEff = a.mu / (rl * rl) - vh * vh / rl;
                 var below = target - rl;

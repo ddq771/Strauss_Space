@@ -19,7 +19,9 @@ using UnityEngine;
 ///   fuel          kg    fuel + oxidizer remaining, plus any solid
 ///                       boosters' propellant
 ///   mass          kg    total vehicle mass
-///   time          s     time since launch
+///   time          s     game time since launch, read from the game's
+///                       date clock (SolarSystem) - the clock rails warp,
+///                       the Moon and the autopilot run on
 ///   temperature   °C    outside air temperature, US Standard Atmosphere
 ///                       1976 - the same model the drag uses
 ///   tilt          deg   angle between the rocket's axis and local vertical
@@ -41,9 +43,9 @@ public sealed class FlightRecorder : MonoBehaviour
     private const int StageGapLines = 3;
 
     [Tooltip("Seconds of simulated flight time between CSV rows.")]
-    // 3 s of game time per row. The clock adds each physics step's own
-    // simulated length (× the rails multiplier), so warp changes how fast
-    // rows arrive in real time, never their spacing in game time.
+    // 3 s of game time per row, on the game's date clock (see Clock), so
+    // warp changes how fast rows arrive in real time, never their spacing
+    // in game time.
     [SerializeField] private float sampleInterval = 3f;
 
     private Rocket rocket;
@@ -53,6 +55,10 @@ public sealed class FlightRecorder : MonoBehaviour
     private Rigidbody body;
     private StreamWriter writer;
     private double elapsed, nextSample;
+    // The game date at liftoff (default = no SolarSystem in the scene), and
+    // a fallback clock summing physics steps for that case - see Clock().
+    private DateTime startDate;
+    private double stepClock;
     private int recordedStage;
     private Vector3 previousVelocity, previousAngularVelocity;
     private Vector3 acceleration, angularAcceleration;
@@ -98,6 +104,36 @@ public sealed class FlightRecorder : MonoBehaviour
             return;
         }
 
+        stepClock += dt * TimeWarp.ClockMultiplier;   // fallback clock only
+        // On rails the rocket isn't moved by physics steps but once per
+        // rendered frame (TimeWarp.Update): its rows are taken in LateUpdate,
+        // after that frame's move. Here: every physics step otherwise.
+        if (TimeWarp.OnRails && !flight.Crashed) return;
+        Sample(dt * 0.5);
+    }
+
+    // Rails warp: one sample opportunity per frame, after TimeWarp has moved
+    // the rocket and SolarSystem has advanced the date (LateUpdate runs after
+    // every script's Update), so position and clock belong to the same moment.
+    private void LateUpdate()
+    {
+        if (writer == null || !rocket.Launched || flight.Crashed || !TimeWarp.OnRails) return;
+        Sample(0);
+    }
+
+    /// <summary>
+    /// Writes a row if the next 3 s mark has been reached. How: blank lines
+    /// first if a new stage has lit; then the clock (Clock: game seconds
+    /// since liftoff) is read; a crash writes a last row and closes the file;
+    /// otherwise, once the clock is within 'tolerance' of nextSample, a row
+    /// is written and nextSample moves on 3 s - or, if a single step jumped
+    /// past several marks (high warp), to the next mark ahead, so there is
+    /// at most one row per step and no backlog to catch up.
+    /// tolerance: half a physics step for physics sampling (the step times
+    /// land just either side of each mark), 0 on rails.
+    /// </summary>
+    private void Sample(double tolerance)
+    {
         // A new stage: leave a gap in the file before its rows.
         var stage = assembly != null ? assembly.StageIndex : 0;
         if (stage != recordedStage)
@@ -106,8 +142,7 @@ public sealed class FlightRecorder : MonoBehaviour
             for (var i = 0; i < StageGapLines; i++) writer.WriteLine();
         }
 
-        // Simulated seconds: on rails (×100, ×1000) each step covers more.
-        elapsed += dt * TimeWarp.ClockMultiplier;
+        elapsed = Clock();
         // Log the impact itself as a final row, then stop - nothing
         // changes afterwards.
         if (flight.Crashed)
@@ -115,17 +150,28 @@ public sealed class FlightRecorder : MonoBehaviour
             WriteRow();
             End();
         }
-        // Half-step tolerance: summing a float fixedDeltaTime drifts just
-        // under each 3 s mark and would otherwise land each row a step late.
-        else if (elapsed + dt * 0.5 >= nextSample)
+        else if (elapsed + tolerance >= nextSample)
         {
             WriteRow();
-            // One row per step at most: at high warp a step spans many
-            // intervals - skip to the next one ahead rather than owe a backlog.
             nextSample += sampleInterval;
             if (nextSample <= elapsed) nextSample = (Math.Floor(elapsed / sampleInterval) + 1) * sampleInterval;
         }
     }
+
+    /// <summary>
+    /// Game seconds since liftoff. How: the game's date now minus the date
+    /// at liftoff. SolarSystem advances its date every frame by the frame's
+    /// time × the warp rate - the same amount rails warp moves the rocket -
+    /// and DateAt(Time.time) gives it at this exact step (inside a physics
+    /// step Time.time is that step's time). Summing physics steps instead
+    /// lost time whenever rails warp moved the rocket without matching
+    /// physics steps (a whole 48-minute transfer coast showed as ~20 s).
+    /// Without a SolarSystem in the scene, the physics-step sum is used.
+    /// </summary>
+    private double Clock() =>
+        SolarSystem.Instance != null && startDate != default
+            ? (SolarSystem.Instance.DateAt(Time.time) - startDate).TotalSeconds
+            : stepClock;
 
     private void Begin()
     {
@@ -140,7 +186,8 @@ public sealed class FlightRecorder : MonoBehaviour
         CurrentFile = Path.Combine(folder, "Flight " + vehicle + " " + tag + DateTime.Now.ToString("yyyy-MM-dd HH-mm-ss", CultureInfo.InvariantCulture) + ".csv");
         writer = new StreamWriter(CurrentFile, false) { AutoFlush = true };
         writer.WriteLine(Header);
-        elapsed = 0;
+        elapsed = stepClock = 0;
+        startDate = SolarSystem.Instance != null ? SolarSystem.Instance.DateAt(Time.time) : default;
         recordedStage = assembly != null ? assembly.StageIndex : 0;
         // The first physics step after release would otherwise read the
         // whole jump from rest as one step's acceleration.
