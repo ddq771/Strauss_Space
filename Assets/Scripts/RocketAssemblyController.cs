@@ -1441,6 +1441,10 @@ public sealed class RocketAssemblyController : MonoBehaviour
     // Auto-staging on: UpdateStaging then separates and lights stages on the
     // real timeline by itself.
     public void SetAutoStaging(bool on)=>autoStaging=on;
+    // Ends the current stage's burn early (RocketFlightModel.CommandMeco):
+    // with auto-staging on, the stage then separates and the next one
+    // lights as after a scheduled cutoff.
+    public void CommandMeco()=>flight.CommandMeco();
     // The Launch button's routine (refuses, with a notice, if TWR < 1).
     public void Launch()=>TryLaunch();
     // The last message shown to the pilot (e.g. why a launch was refused).

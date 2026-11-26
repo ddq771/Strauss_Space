@@ -173,6 +173,9 @@ public sealed class Autopilot : MonoBehaviour
     // Upper-ascent guidance (linear-tangent steering, AscentGuidance), with
     // its hand-over and fallback rules - see GuidedClimb. New every liftoff.
     private GuidedClimb climb = new();
+    // Finishing burns flown for a custom orbit (StartCustomOrbit), reset at
+    // each Engage - a cap so an orbit that can't be rounded ends the mission.
+    private int customFixes;
     private float gammaCommand = 90, gammaLatch;
 
     // The planned burn.
@@ -241,7 +244,7 @@ public sealed class Autopilot : MonoBehaviour
         // clear the recorder's file-name tag and any recording left over.
         // ("Fly reference" sets recordNext just before calling Engage, and
         // LiftOff turns that into an actual recording.)
-        recording = false; FlightTag = "";
+        recording = false; FlightTag = ""; customFixes = 0;
         escapeChoice = EscapeChoice.Ask; CloseEscapePrompt();
         predictedMax = destination == Destination.MaxOrbit || destination == Destination.CustomOrbit ? PredictMaxOrbit(out _) : -1;
         // Custom orbit from the pad: the pre-launch simulation already says
@@ -721,6 +724,26 @@ public sealed class Autopilot : MonoBehaviour
         // In orbit with a lower stage still burning (a core stage running to
         // its scheduled cutoff): spend it prograde - it's dropped anyway,
         // and every m/s it adds is one the upper stage keeps.
+        // But only until the orbit's high point reaches where the mission is
+        // going (a custom height, or the parking orbit for low orbit): past
+        // that, every m/s more stretches the orbit further above the target,
+        // and bringing that high point back down costs far more than the
+        // core added - a light Shuttle burning to its scheduled MECO went
+        // 200 × 5,700 km, out of the orbiter's reach. So there the core is
+        // shut down (CommandMeco), auto-staging drops it and lights the next
+        // stage, and the upper stage keeps all its propellant. Moon and
+        // maximum-orbit missions want all the energy they can get: no limit.
+        var burnOutTo = Target == Destination.CustomOrbit ? radius + CustomAltitude
+                      : Target == Destination.LowOrbit ? radius + AscentAltitude
+                      : double.PositiveInfinity;
+        if (safeOrbit && ap >= burnOutTo - 5000 && !assembly.StagingInProgress)
+        {
+            SetThrottle(0);
+            assembly.CommandMeco();
+            Detail = "In orbit · " + (assembly.StageName(assembly.StageIndex) ?? "stage") + " shut down, high point at " +
+                     TrajectoryDisplay.Km(ap - radius) + " · staging";
+            return;
+        }
         if (safeOrbit)
         {
             Point(v);
@@ -864,11 +887,26 @@ public sealed class Autopilot : MonoBehaviour
     }
 
     // Custom orbit, from any Earth orbit: decide whether there's anything to
-    // do and which way. How: reads the present orbit's low and high points;
-    // if both are already within max(5 km, 1 %) of the typed height the
-    // orbit is it - done. Otherwise its mean radius (pe + ap)/2 against the
-    // target radius picks Raise (prograde Hohmann up) or Lower (retrograde
-    // Hohmann down); the step's planner works out the burns.
+    // do and which way. How: reads the present orbit's low and high points
+    // and compares each with the typed height (within max(5 km, 1 %)):
+    //  * both at it: the orbit is it - done;
+    //  * the whole orbit below it (high point under): Raise, a prograde
+    //    Hohmann transfer up; the whole orbit above it (low point over):
+    //    Lower, the retrograde mirror;
+    //  * the orbit crosses it (low point under, high point at or over - a
+    //    core stage that ran long leaves 200 × 5,000+ km): fix one end at a
+    //    time with the burns that finish a transfer. Low point under first:
+    //    Circularize - prograde at the high point, until the low point is up
+    //    at the target. That leaves target × high point, and the next call
+    //    gets low point at, high point over: LowerCircularize - retrograde at
+    //    the low point (now at the target height) until the high point is
+    //    down to it. (Raising the low point at the top first is the cheaper
+    //    order: there the vehicle is slow, so the change costs least; ~990
+    //    against ~1,040 m/s from 200 × 5,500 km to 1,000 km.)
+    // Before, a crossing orbit went to Lower by its mean height, which only
+    // brought the high point down and then reported the orbit done with its
+    // low point still at 200 km. Advance() now calls this again after each
+    // finishing burn, so the mission ends only when both ends are there.
     private void StartCustomOrbit()
     {
         planned = burning = false; replanAt = -1;
@@ -878,10 +916,24 @@ public sealed class Autopilot : MonoBehaviour
         var tolerance = Math.Max(5000, CustomAltitude * .01);
         if (Math.Abs(pe - target) <= tolerance && Math.Abs(ap - target) <= tolerance)
         {
-            Finish("In a " + TrajectoryDisplay.Km(CustomAltitude) + " orbit: " + OrbitText(r, v));
+            Finish("In the requested " + TrajectoryDisplay.Km(CustomAltitude) + " orbit: " + OrbitText(r, v));
             return;
         }
-        step = (pe + ap) / 2 < target ? Step.Raise : Step.Lower;
+        // Every finishing burn should fix one end; four without getting
+        // there means it can't (out of thrust, the Moon pulling it about).
+        if (customFixes >= 4)
+        {
+            Finish("Close to " + TrajectoryDisplay.Km(CustomAltitude) + " but not round: " + OrbitText(r, v));
+            return;
+        }
+        orbitTarget = CustomAltitude;
+        if (ap < target - tolerance) step = Step.Raise;
+        else if (pe > target + tolerance) step = Step.Lower;
+        else
+        {
+            customFixes++;
+            step = pe < target - tolerance ? Step.Circularize : Step.LowerCircularize;
+        }
     }
 
     // --- Burns -------------------------------------------------------------------
@@ -997,8 +1049,11 @@ public sealed class Autopilot : MonoBehaviour
                 // the vehicle is now (past that, this point becomes the low
                 // point and the burn only raises the far side): aim for the
                 // lower of the target and the present altitude.
+                // Stops within 0.4 % (≥ 2 km) of it - well inside the 1 % a
+                // custom orbit must be within to count as done (StartCustomOrbit),
+                // so a finishing burn doesn't end just outside and need another.
                 var reachable = Math.Min(cutoffValue, r.Length - radius - 3000);
-                if (pe - radius >= reachable - Math.Max(2000, cutoffValue * .01)) return true;
+                if (pe - radius >= reachable - Math.Max(2000, cutoffValue * .004)) return true;
                 // Sinking a little through the burn, the low point creeps up
                 // on the present altitude without quite reaching it. Stop once
                 // the horizontal speed is circular-orbit speed here, √(μ/r):
@@ -1017,8 +1072,9 @@ public sealed class Autopilot : MonoBehaviour
                 // and the present altitude. As there, stop also once the
                 // horizontal speed has fallen to circular speed √(μ/r): the
                 // orbit is then round at the height it is actually at.
+                // (Within 0.4 %, as above.)
                 var reachable = Math.Max(cutoffValue, r.Length - radius + 3000);
-                if (ap - radius <= reachable + Math.Max(2000, cutoffValue * .01)) return true;
+                if (ap - radius <= reachable + Math.Max(2000, cutoffValue * .004)) return true;
                 var up = r.Normalized;
                 var horizontal = (v - up * Double3.Dot(v, up)).Length;
                 return horizontal <= Math.Sqrt(mu / r.Length);
@@ -1069,10 +1125,13 @@ public sealed class Autopilot : MonoBehaviour
             case Step.Circularize:
             case Step.LowerCircularize:
             {
+                // Custom orbit: check the orbit really is the requested one
+                // (both ends at the height) - StartCustomOrbit finishes if so,
+                // or plans the burn that fixes the end still off.
+                if (Target == Destination.CustomOrbit) { StartCustomOrbit(); break; }
                 GetState(out var r, out var v);
                 Elements(r, v, out var pe, out var ap, out _);
-                Finish((Target == Destination.CustomOrbit ? "In the requested " + TrajectoryDisplay.Km(CustomAltitude) + " orbit: " : "In the maximum orbit: ") +
-                       TrajectoryDisplay.Km(pe - radius) + " × " + TrajectoryDisplay.Km(ap - radius));
+                Finish("In the maximum orbit: " + TrajectoryDisplay.Km(pe - radius) + " × " + TrajectoryDisplay.Km(ap - radius));
                 break;
             }
             case Step.Tli:

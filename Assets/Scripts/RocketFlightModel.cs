@@ -82,6 +82,19 @@ public sealed class RocketFlightModel : MonoBehaviour
     public void StopProgramUntilIgnition(){mecoDone=false;}
     /// <summary>The last stage may relight after its programmed cutoff (e.g. the S-IVB for translunar injection).</summary>
     public void AllowRelight(){mecoDone=false;mecoTime=0;}
+    /// <summary>Main engine cutoff now, before the scheduled time - the
+    /// guidance computer's call, as the real Shuttle's MECO was. How: sets
+    /// the same mecoDone flag the scheduled cutoff sets and stops the
+    /// engines; RocketAssemblyController.UpdateStaging treats the stage as
+    /// spent and separates it on the usual timeline, whatever propellant is
+    /// left in it.</summary>
+    public void CommandMeco()
+    {
+        if(mecoDone)return;
+        mecoDone=true;
+        rocket.StopEngine();
+        Status="Engine cutoff at T+"+Clock(missionTime)+" (commanded).";
+    }
     /// <summary>The flight program's throttle limit now (1 = none).</summary>
     public float ProgramThrottle
     {
