@@ -1,0 +1,30 @@
+{
+  "key": "SaturnIB",
+  "height_m": 68.06,
+  "stages": [
+    {
+      "name": "SIB",
+      "bottom_m": 0.2,
+      "top_m": 28.6,
+      "note": "S-IB: 8 H-1"
+    },
+    {
+      "name": "LES",
+      "bottom_m": 59.8,
+      "top_m": 68.06,
+      "note": "Launch escape tower, jettisoned after S-IVB ignition"
+    },
+    {
+      "name": "SIVB",
+      "bottom_m": 26.4,
+      "top_m": 55.8,
+      "note": "S-IVB-200: 1 J-2, with the Instrument Unit"
+    },
+    {
+      "name": "Payload",
+      "bottom_m": 55.8,
+      "top_m": 63.0,
+      "note": "Apollo CSM in its adapter"
+    }
+  ]
+}

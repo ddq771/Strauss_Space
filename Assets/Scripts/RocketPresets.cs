@@ -193,6 +193,12 @@ public static class RocketPresets
         public float mecoSeconds;
         public float[] throttleProgram;
         public float[] engineCutoffs;
+        // Optional first-stage engine layout as (count, radius m, phase
+        // degrees, centre offset x m) groups; the sockets are numbered group
+        // by group in this order, so engineCutoffs can name a whole group
+        // (Falcon Heavy's side cores). Null = the automatic centre + rings.
+        // RocketAssemblyController.BodyThrustPositions lays them out.
+        public float[] engineLayout;
         // Staging. When set, the first stage (the fields above) separates at
         // its cutoff and each upper stage lights in turn; dryMass is then
         // only the first stage's own, and payloadMass is what rides on top
@@ -308,6 +314,67 @@ public static class RocketPresets
         },
         new()
         {
+            // Falcon Heavy: three Falcon 9 first-stage cores side by side
+            // (27 Merlin 1D), the Falcon 9 second stage and fairing on the
+            // centre core. 70 m tall, 12.2 m wide, ~1,420 t at liftoff.
+            // The cores share one propellant pool here (the game models one
+            // first-stage tank): the side cores' 18 engines shut down at
+            // T+2:34 and the boosters drop away; the centre core's 9 burn on
+            // to MECO. (The real centre core throttles down early to save
+            // its own propellant; one pool gives the same total burn.)
+            // Aero: three cores, no fins: centre of pressure forward - unstable.
+            centerOfPressure = .7f, normalForceSlope = 2.6f,
+            firstStageHeat = HeatProtection.BaseShield(1300f, HeatZone.Aluminium), firstStageRcs = 1.5f, firstStageAeroControl = 1.5f,
+            description = "SpaceX's heavy lifter since 2018: three Falcon 9 cores, 27 Merlins; the side boosters peel away at T+2:34.",
+            name = "Falcon Heavy", bodyModelKey = "FalconHeavy", engineId = "Merlin1D", engineCount = 27,
+            // Physics flies one cylinder: 6.34 m has the frontal area of the
+            // three 3.66 m cores together (31.6 m²), so drag comes out right.
+            bodyDiameter = 6.34f, bodyHeight = 53f, noseHeight = 13f, engineHeight = 4f,
+            hullColor = new Color(0.94f, 0.94f, 0.95f), dragCoefficient = 0.35f,
+            // Three Falcon 9 loads: 3 × (123.5 t RP-1 + 287.4 t LOX).
+            fuelType = "RP-1", fuelCapacity = 457.5f, fuelDiameter = 6.34f,
+            oxidizerCapacity = 755.7f, oxidizerDiameter = 6.34f,
+            // Three cores, 25.6 t dry each.
+            dryMass = 76800f,
+            firstStageName = "Centre core + side boosters",
+            firstStageModelStages = new[] { "CentreCore" },
+            // Side boosters separate at T+2:34 (their 18 engines cut off then,
+            // see engineCutoffs).
+            firstStageDrops = new[]
+            {
+                new StageDrop { time = 154f, modelStages = new[] { "Booster_Left", "Booster_Right" }, mass = 51200f },
+            },
+            upperStages = new[]
+            {
+                // The Falcon 9 second stage: one Merlin Vacuum, 92.7 t of
+                // RP-1/LOX; the fairing goes ~T+3:40, 30 s after it lights.
+                new StageSpec
+                {
+                    name = "Second stage", modelStages = new[] { "SecondStage" },
+                    engines = Engines("MerlinVac", 1), fuelType = "RP-1",
+                    fuelMass = 27600f, oxidizerMass = 65100f, dryMass = 5800f, diameter = 3.66f,
+                    separationDelay = 3f, ignitionDelay = 7f,
+                    drops = new[] { new StageDrop { time = 30f, modelStages = new[] { "Fairing_A", "Fairing_B" }, mass = 1900f } },
+                },
+            },
+            payloadMass = 15000f,
+            payloadMax = 63800f,      // to LEO, fully expendable
+            // Each core as a Falcon 9 octaweb: centre engine + ring of 8
+            // (1.3 m radius); centre core first, then the side cores 4.1 m
+            // either side - so sockets 9-26 are the side cores.
+            engineLayout = new[] { 1f, 0f, 0f, 0f, 8f, 1.3f, 0f, 0f, 1f, 0f, 0f, -4.1f, 8f, 1.3f, 0f, -4.1f, 1f, 0f, 0f, 4.1f, 8f, 1.3f, 0f, 4.1f },
+            engineCutoffs = new[]
+            {
+                154f, 9f, 154f, 10f, 154f, 11f, 154f, 12f, 154f, 13f, 154f, 14f, 154f, 15f, 154f, 16f, 154f, 17f,
+                154f, 18f, 154f, 19f, 154f, 20f, 154f, 21f, 154f, 22f, 154f, 23f, 154f, 24f, 154f, 25f, 154f, 26f,
+            },
+            // Throttled to 70% through Max Q like Falcon 9; the centre core's
+            // MECO at T+3:04, where the shared propellant runs out.
+            mecoSeconds = 184f,
+            throttleProgram = new[] { 0f, 1f, 45f, 1f, 52f, .7f, 85f, .7f, 92f, 1f },
+        },
+        new()
+        {
             // First stage only: Super Heavy's 33 Raptors (74.4 MN at sea
             // level) lift the whole stack - the Ship's 6 engines don't fire
             // until after separation, when the Ship lights on its own
@@ -365,6 +432,44 @@ public static class RocketPresets
         },
         new()
         {
+            // Rocket Lab Electron: 18 m, 1.2 m, ~13 t at liftoff - a small
+            // launcher (300 kg to LEO) whose Rutherford engines' pumps are
+            // driven by electric motors from batteries. Carbon-composite
+            // body. Published: liftoff mass, thrust, Isp, ~2 t second-stage
+            // propellant. Estimated: the first stage's 9.6 t of RP-1/LOX
+            // (O/F 2.4: 2.82 t + 6.78 t) and 900 kg dry, from the liftoff
+            // mass, which burn ~145 s (MECO is ~T+2:30 for real).
+            // Aero: no fins, but a slim body (15:1) makes little lift - a
+            // centre of pressure near the middle, mildly unstable.
+            centerOfPressure = .5f, normalForceSlope = 2f,
+            description = "Rocket Lab's small launcher since 2017: nine battery-powered Rutherford engines, 300 kg to orbit.",
+            name = "Electron", bodyModelKey = "Electron", engineId = "Rutherford", engineCount = 9,
+            bodyDiameter = 1.2f, bodyHeight = 14.9f, noseHeight = 2.5f, engineHeight = .6f,
+            hullColor = new Color(0.08f, 0.08f, 0.09f), dragCoefficient = 0.35f,
+            fuelType = "RP-1", fuelCapacity = 3.486f, fuelDiameter = 1.2f,
+            oxidizerCapacity = 5.939f, oxidizerDiameter = 1.2f,
+            dryMass = 900f,
+            firstStageName = "First stage",
+            firstStageModelStages = new[] { "FirstStage" },
+            upperStages = new[]
+            {
+                // Second stage: one Rutherford Vacuum, ~2 t of propellant,
+                // ~4.5 min. Dry 300 kg with the Curie kick stage, + the 50 kg
+                // fairing until it goes, 25 s after ignition (~T+3:00).
+                new StageSpec
+                {
+                    name = "Second stage", modelStages = new[] { "SecondStage" },
+                    engines = Engines("RutherfordVac", 1), fuelType = "RP-1",
+                    fuelMass = 588f, oxidizerMass = 1412f, dryMass = 350f, diameter = 1.2f,
+                    separationDelay = 2f, ignitionDelay = 3f,
+                    drops = new[] { new StageDrop { time = 25f, modelStages = new[] { "Fairing_A", "Fairing_B" }, mass = 50f } },
+                },
+            },
+            payloadMass = 200f,       // to a 500 km sun-synchronous orbit
+            payloadMax = 300f,        // to LEO
+        },
+        new()
+        {
             // 1 RD-108 core + 4 RD-107 boosters, all represented with the
             // same RD107 catalog entry (see EnginePerformance.Reference) -
             // the two are similar engines and this project only models one
@@ -415,6 +520,48 @@ public static class RocketPresets
             // vehicle separate) at T+118 s; the core burns on alone to
             // depletion at ~T+5:15.
             engineCutoffs = new[] { 118f, 1f, 118f, 2f, 118f, 3f, 118f, 4f },
+        },
+        new()
+        {
+            // Saturn IB (AS-205 / Apollo 7 configuration): 68 m with the
+            // Apollo CSM and escape tower, ~590 t at liftoff, 21 t to LEO.
+            // S-IB: 6.6 m, eight H-1 engines (7.3 MN), 400 t of RP-1/LOX at
+            // O/F 2.23 (124 t + 276 t), 42 t dry; inboard engines off at
+            // T+140.6 s, outboard at T+144.3 s. Then the S-IVB-200 - the same
+            // stage as the Saturn V's third stage, here burning to orbit.
+            // Aero: eight fins - stable.
+            centerOfPressure = .3f, normalForceSlope = 4f,
+            description = "The smaller Apollo rocket, 1966-75 (Apollo 7, Skylab crews, Apollo-Soyuz): eight H-1s, then an S-IVB.",
+            name = "Saturn IB", bodyModelKey = "SaturnIB", engineId = "H1", engineCount = 8,
+            bodyDiameter = 6.6f, bodyHeight = 47f, noseHeight = 18.06f, engineHeight = 3f,
+            hullColor = new Color(0.92f, 0.92f, 0.89f), dragCoefficient = 0.45f,
+            fuelType = "RP-1", fuelCapacity = 153f, fuelDiameter = 6.6f,
+            oxidizerCapacity = 241.9f, oxidizerDiameter = 6.6f,
+            dryMass = 42000f,
+            firstStageName = "S-IB",
+            firstStageModelStages = new[] { "SIB" },
+            upperStages = new[]
+            {
+                // S-IVB-200: one J-2, ~105 t of LH2/LOX, burns to orbit (~7.5
+                // min). Dry 11.5 t with the Instrument Unit + the 4.2 t escape
+                // tower riding above until it's jettisoned 20 s in.
+                new StageSpec
+                {
+                    name = "S-IVB", modelStages = new[] { "SIVB" },
+                    engines = Engines("J2", 1), fuelType = "LH2",
+                    fuelMass = 19400f, oxidizerMass = 85600f, dryMass = 15670f, diameter = 6.6f,
+                    drops = new[] { new StageDrop { time = 20f, modelStages = new[] { "LES" }, mass = 4170f } },
+                    separationDelay = 1.3f, ignitionDelay = 1.3f,
+                },
+            },
+            // The Apollo CSM (Apollo 7: ~15.6 t) with its adapter.
+            payloadMass = 15600f,
+            payloadMax = 21000f,      // to LEO
+            mecoSeconds = 144.3f,
+            // Four inboard engines on an inner ring (sockets 0-3), four
+            // outboard around them; the inboard four shut down first.
+            engineLayout = new[] { 4f, .95f, 45f, 0f, 4f, 2.4f, 0f, 0f },
+            engineCutoffs = new[] { 140.6f, 0f, 140.6f, 1f, 140.6f, 2f, 140.6f, 3f },
         },
         new()
         {
@@ -658,6 +805,187 @@ public static class RocketPresets
             // RD-180 throttled through Max Q, and back late in the burn to
             // hold the g-load; booster engine cutoff ~T+4:10 at depletion.
             throttleProgram = new[] { 0f, 1f, 30f, 1f, 40f, .92f, 75f, .92f, 85f, 1f, 170f, 1f, 190f, .75f },
+        },
+        new()
+        {
+            // Atlas V 431: the 401 (same booster, single-engine Centaur, 4-m
+            // fairing) with three AJ-60A solid boosters: ~474 t at liftoff,
+            // 15.3 t to LEO.
+            // Aero: three solids add area low down - near neutral.
+            centerOfPressure = .45f, normalForceSlope = 3f,
+            description = "Atlas V with three solid boosters strapped to the RD-180 core: the 400 series' heavier lifter.",
+            name = "Atlas V 431", bodyModelKey = "AtlasV431", engineId = "RD180", engineCount = 1,
+            solidBoosterId = "AJ60A", solidBoosterCount = 3,
+            bodyDiameter = 3.81f, bodyHeight = 46.3f, noseHeight = 9f, engineHeight = 3f,
+            hullColor = new Color(0.72f, 0.43f, 0.22f), dragCoefficient = 0.5f,
+            fuelType = "RP-1", fuelCapacity = 94.3f, fuelDiameter = 3.81f,
+            oxidizerCapacity = 182.1f, oxidizerDiameter = 3.81f,
+            dryMass = 22053f,
+            firstStageName = "Common Core Booster + solids",
+            firstStageModelStages = new[] { "Booster" },
+            // The solids burn out ~T+1:34 and are jettisoned at ~T+1:40.
+            firstStageDrops = new[]
+            {
+                new StageDrop { time = 100f, modelStages = new[] { "SRB_1", "SRB_2", "SRB_3" }, solids = true },
+            },
+            upperStages = new[]
+            {
+                new StageSpec
+                {
+                    name = "Centaur", modelStages = new[] { "Centaur" },
+                    engines = Engines("RL10C1", 1), fuelType = "LH2",
+                    fuelMass = 3030f, oxidizerMass = 17800f, dryMass = 4443f, diameter = 3.05f,
+                    separationDelay = 6f, ignitionDelay = 10f,
+                    drops = new[] { new StageDrop { time = 8f, modelStages = new[] { "Fairing_A", "Fairing_B" }, mass = 2127f } },
+                },
+            },
+            payloadMass = 10000f,
+            payloadMax = 15260f,      // to LEO, 28.5°
+            // Same RD-180 program as the 401: down through Max Q, and late in
+            // the burn to hold the g-load.
+            throttleProgram = new[] { 0f, 1f, 30f, 1f, 40f, .92f, 75f, .92f, 85f, 1f, 170f, 1f, 190f, .75f },
+        },
+        new()
+        {
+            // ULA Vulcan Centaur VC2S (2 solids, standard fairing), as flown
+            // since 2024: 61.6 m, 5.4 m, ~560 t at liftoff, ~19 t to LEO.
+            // Booster: 382 t gross, 28.6 t empty -> 353.4 t of methane/LOX at
+            // O/F 3.6 (76.8 t + 276.6 t); two BE-4s (4.9 MN), throttled to
+            // 90 % through Max Q. (The real ~5 min booster burn implies
+            // deeper throttling than this BE-4 model needs; here it burns
+            // out at ~T+3:50.)
+            // Aero: two solids low down - near neutral.
+            centerOfPressure = .45f, normalForceSlope = 3f,
+            description = "ULA's Atlas V successor (2024): two methane BE-4s, solid boosters, and the hydrogen Centaur V.",
+            name = "Vulcan Centaur", bodyModelKey = "Vulcan", engineId = "BE4", engineCount = 2,
+            solidBoosterId = "GEM63XL", solidBoosterCount = 2,
+            bodyDiameter = 5.4f, bodyHeight = 45f, noseHeight = 13f, engineHeight = 3.6f,
+            hullColor = new Color(0.9f, 0.9f, 0.9f), dragCoefficient = 0.45f,
+            fuelType = "Methane", fuelCapacity = 181.8f, fuelDiameter = 5.4f,
+            oxidizerCapacity = 242.4f, oxidizerDiameter = 5.4f,
+            // Booster 28.6 t + the 3.5 t fairing (jettisoned during the
+            // booster burn).
+            dryMass = 32100f,
+            firstStageName = "Booster + solids",
+            firstStageModelStages = new[] { "Booster" },
+            firstStageDrops = new[]
+            {
+                new StageDrop { time = 100f, modelStages = new[] { "SRB_Left", "SRB_Right" }, solids = true },
+                new StageDrop { time = 220f, modelStages = new[] { "Fairing_A", "Fairing_B" }, mass = 3500f },
+            },
+            upperStages = new[]
+            {
+                // Centaur V: two RL10C-X, 54 t of LH2/LOX, 7.1 t dry.
+                new StageSpec
+                {
+                    name = "Centaur V", modelStages = new[] { "Centaur" },
+                    engines = Engines("RL10CX", 2), fuelType = "LH2",
+                    fuelMass = 7848f, oxidizerMass = 46152f, dryMass = 7100f, diameter = 5.4f,
+                    separationDelay = 6f, ignitionDelay = 10f,
+                },
+            },
+            payloadMass = 10000f,
+            payloadMax = 19000f,      // VC2S to LEO
+            throttleProgram = new[] { 0f, 1f, 35f, 1f, 45f, .9f, 75f, .9f, 85f, 1f },
+        },
+        new()
+        {
+            // Delta IV Heavy (final, RS-68A configuration), 2004-2024: three
+            // 5.1 m hydrogen Common Booster Cores, 72 m, ~733 t, 28.8 t to
+            // LEO. Each core: one RS-68A, ~202 t of LH2/LOX (O/F 6), 26.8 t
+            // dry. One shared pool here (606 t: 86.6 t LH2 + 519.4 t LOX):
+            // the side cores' engines shut down at T+3:56 and they drop; the
+            // centre core burns on to MECO near T+5:30. (For real the
+            // centre core throttles to ~58 % right after liftoff to save
+            // its own propellant; the throttle program does that for all
+            // three here, the same total.)
+            // Aero: three cores, no fins - unstable.
+            centerOfPressure = .65f, normalForceSlope = 2.6f,
+            description = "Hydrogen heavy lifter, 2004-24: three orange RS-68A cores, the Delta Cryogenic Second Stage above.",
+            name = "Delta IV Heavy", bodyModelKey = "DeltaIVHeavy", engineId = "RS68A", engineCount = 3,
+            // One cylinder with the three cores' frontal area (61.9 m²).
+            bodyDiameter = 8.88f, bodyHeight = 50f, noseHeight = 19f, engineHeight = 3f,
+            hullColor = new Color(0.85f, 0.45f, 0.15f), dragCoefficient = 0.45f,
+            fuelType = "LH2", fuelCapacity = 1222.3f, fuelDiameter = 8.88f,
+            oxidizerCapacity = 455.2f, oxidizerDiameter = 8.88f,
+            // Three cores 80.4 t + the 3.5 t fairing (jettisoned during the
+            // centre core's burn).
+            dryMass = 83900f,
+            firstStageName = "Centre core + side boosters",
+            firstStageModelStages = new[] { "CentreCore" },
+            firstStageDrops = new[]
+            {
+                new StageDrop { time = 239f, modelStages = new[] { "Booster_Left", "Booster_Right" }, mass = 53600f },
+                new StageDrop { time = 250f, modelStages = new[] { "Fairing_A", "Fairing_B" }, mass = 3500f },
+            },
+            upperStages = new[]
+            {
+                // DCSS (5 m): one RL10B-2, 27.2 t of LH2/LOX, 3.5 t dry.
+                new StageSpec
+                {
+                    name = "DCSS", modelStages = new[] { "DCSS" },
+                    engines = Engines("RL10B2", 1), fuelType = "LH2",
+                    fuelMass = 3956f, oxidizerMass = 23264f, dryMass = 3490f, diameter = 5.1f,
+                    separationDelay = 6f, ignitionDelay = 13f,
+                },
+            },
+            payloadMass = 10000f,
+            payloadMax = 28790f,      // to LEO
+            // Centre core's RS-68A (socket 0) on the axis, the side cores'
+            // 5.3 m either side (sockets 1-2).
+            engineLayout = new[] { 1f, 0f, 0f, 0f, 1f, 0f, 0f, -5.3f, 1f, 0f, 0f, 5.3f },
+            engineCutoffs = new[] { 236f, 1f, 236f, 2f },
+            throttleProgram = new[] { 0f, 1f, 30f, 1f, 40f, .78f, 236f, .78f, 240f, 1f },
+        },
+        new()
+        {
+            // Long March 8A (CZ-8A), first flown 11 Feb 2025 - the newest
+            // Long March in regular service (12A, 12B and 10B are still
+            // prototypes). 50.5 m, 371 t at liftoff. Published: engines,
+            // diameters, liftoff mass. Estimated: the propellant split below,
+            // fitted to the liftoff mass and a ~3.5 min first-stage burn.
+            // Core 3.35 m with 2 YF-100 + two 2.25 m boosters with 1 YF-100
+            // each, one shared pool of 305 t RP-1/LOX at O/F 2.6 (84.7 t +
+            // 220.3 t); the boosters' engines shut down at T+2:47 when their
+            // share (~68 t each) is gone and the boosters drop away.
+            // Aero: two boosters, small fins - near neutral.
+            centerOfPressure = .45f, normalForceSlope = 3f,
+            description = "China's newest Long March in service (2025): a YF-100 kerosene core and two boosters, then a hydrogen upper stage.",
+            name = "Long March 8A", bodyModelKey = "LongMarch8A", engineId = "YF100", engineCount = 4,
+            // Physics flies one cylinder: 4.6 m has the frontal area of the
+            // core and both boosters (16.8 m²).
+            bodyDiameter = 4.6f, bodyHeight = 36.5f, noseHeight = 11f, engineHeight = 3f,
+            hullColor = new Color(0.94f, 0.94f, 0.94f), dragCoefficient = 0.45f,
+            fuelType = "RP-1", fuelCapacity = 104.6f, fuelDiameter = 4.6f,
+            oxidizerCapacity = 193.1f, oxidizerDiameter = 4.6f,
+            // Core 15 t dry + 2 boosters 6 t each.
+            dryMass = 27000f,
+            firstStageName = "Core + boosters",
+            firstStageModelStages = new[] { "Core" },
+            firstStageDrops = new[]
+            {
+                new StageDrop { time = 168f, modelStages = new[] { "Booster_Left", "Booster_Right" }, mass = 12000f },
+            },
+            upperStages = new[]
+            {
+                // Second stage: 3.35 m, 2 YF-75H, ~25 t of LH2/LOX (estimated),
+                // ~9 min. Dry 4.5 t + the 2 t fairing until it's jettisoned.
+                new StageSpec
+                {
+                    name = "Second stage", modelStages = new[] { "SecondStage" },
+                    engines = Engines("YF75H", 2), fuelType = "LH2",
+                    fuelMass = 3570f, oxidizerMass = 21430f, dryMass = 6500f, diameter = 3.35f,
+                    separationDelay = 2f, ignitionDelay = 3f,
+                    drops = new[] { new StageDrop { time = 20f, modelStages = new[] { "Fairing_A", "Fairing_B" }, mass = 2000f } },
+                },
+            },
+            payloadMass = 7000f,      // to a 700 km sun-synchronous orbit
+            payloadMax = 9800f,       // to LEO
+            // Core's two engines either side of the axis (0.75 m), the
+            // boosters' on the other axis (2.9 m out) - so sockets 2 and 3
+            // are the boosters.
+            engineLayout = new[] { 2f, .75f, 0f, 0f, 2f, 2.9f, 90f, 0f },
+            engineCutoffs = new[] { 167f, 2f, 167f, 3f },
         },
     };
 }

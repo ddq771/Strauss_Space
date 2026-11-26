@@ -1,0 +1,48 @@
+{
+  "key": "FalconHeavy",
+  "height_m": 70.0,
+  "stages": [
+    {
+      "name": "Booster_Left",
+      "bottom_m": 0.1,
+      "top_m": 44.9,
+      "note": "Side booster: 9 Merlin 1D; separates at ~2.5 min"
+    },
+    {
+      "name": "Booster_Right",
+      "bottom_m": 0.1,
+      "top_m": 44.9,
+      "note": "Side booster: 9 Merlin 1D; separates at ~2.5 min"
+    },
+    {
+      "name": "CentreCore",
+      "bottom_m": 0.1,
+      "top_m": 42.6,
+      "note": "Centre core: 9 Merlin 1D; MECO ~3 min"
+    },
+    {
+      "name": "Fairing_A",
+      "bottom_m": 56.0,
+      "top_m": 70.0,
+      "note": "Fairing half"
+    },
+    {
+      "name": "Fairing_B",
+      "bottom_m": 56.0,
+      "top_m": 70.0,
+      "note": "Fairing half"
+    },
+    {
+      "name": "SecondStage",
+      "bottom_m": 37.6,
+      "top_m": 56.0,
+      "note": "Upper stage: 1 Merlin Vacuum"
+    },
+    {
+      "name": "Payload",
+      "bottom_m": 56.5,
+      "top_m": 62.5,
+      "note": "Generic satellite"
+    }
+  ]
+}

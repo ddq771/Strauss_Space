@@ -1,0 +1,48 @@
+{
+  "key": "LongMarch8A",
+  "height_m": 50.5,
+  "stages": [
+    {
+      "name": "Booster_Left",
+      "bottom_m": 0.0,
+      "top_m": 26.5,
+      "note": "2.25 m booster: 1 YF-100"
+    },
+    {
+      "name": "Booster_Right",
+      "bottom_m": 0.0,
+      "top_m": 26.5,
+      "note": "2.25 m booster: 1 YF-100"
+    },
+    {
+      "name": "Core",
+      "bottom_m": 0.0,
+      "top_m": 27.0,
+      "note": "Core stage: 2 YF-100"
+    },
+    {
+      "name": "Fairing_A",
+      "bottom_m": 37.375,
+      "top_m": 50.5,
+      "note": "Fairing half"
+    },
+    {
+      "name": "Fairing_B",
+      "bottom_m": 37.375,
+      "top_m": 50.5,
+      "note": "Fairing half"
+    },
+    {
+      "name": "SecondStage",
+      "bottom_m": 26.4,
+      "top_m": 39.375,
+      "note": "Second stage: 2 YF-75H"
+    },
+    {
+      "name": "Payload",
+      "bottom_m": 39.775,
+      "top_m": 44.875,
+      "note": "Generic satellite"
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "triangles": 3152,
+  "mesh_objects": 17,
+  "materials": 5,
+  "stages": [
+    "Booster_Left",
+    "Booster_Right",
+    "CentreCore",
+    "Fairing_A",
+    "Fairing_B",
+    "DCSS",
+    "Payload"
+  ],
+  "bounds_m": {
+    "x": 15.73,
+    "y": 5.13,
+    "z": 72.0
+  },
+  "note": "Visual approximation; proportions and details are approximate, not scaled CAD."
+}

@@ -15,7 +15,7 @@ using UnityEngine;
 /// </summary>
 public static class RocketBodySetup
 {
-    private static readonly string[] Keys = { "Falcon9", "Starship", "Vostok", "SaturnV", "SpaceShuttle", "SLS", "Ariane5", "AtlasV" };
+    private static readonly string[] Keys = { "Falcon9", "FalconHeavy", "Starship", "Vostok", "SaturnV", "SpaceShuttle", "SLS", "Ariane5", "AtlasV", "AtlasV431", "Vulcan", "DeltaIVHeavy", "LongMarch8A", "Electron", "SaturnIB" };
 
     [MenuItem("Strauss Space/Rebuild Rocket Body Prefabs")]
     public static void Build()

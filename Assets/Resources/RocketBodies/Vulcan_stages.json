@@ -1,0 +1,48 @@
+{
+  "key": "Vulcan",
+  "height_m": 61.6,
+  "stages": [
+    {
+      "name": "SRB_Left",
+      "bottom_m": 0.6,
+      "top_m": 24.4,
+      "note": "GEM 63XL solid, jettisoned at ~1 min 40 s"
+    },
+    {
+      "name": "SRB_Right",
+      "bottom_m": 0.6,
+      "top_m": 24.4,
+      "note": "GEM 63XL solid, jettisoned at ~1 min 40 s"
+    },
+    {
+      "name": "Fairing_A",
+      "bottom_m": 47.0,
+      "top_m": 61.6,
+      "note": "Fairing half"
+    },
+    {
+      "name": "Fairing_B",
+      "bottom_m": 47.0,
+      "top_m": 61.6,
+      "note": "Fairing half"
+    },
+    {
+      "name": "Booster",
+      "bottom_m": 0.4,
+      "top_m": 39.0,
+      "note": "Booster: 2 BE-4"
+    },
+    {
+      "name": "Centaur",
+      "bottom_m": 37.4,
+      "top_m": 50.0,
+      "note": "Centaur V: 2 RL10C-X"
+    },
+    {
+      "name": "Payload",
+      "bottom_m": 50.5,
+      "top_m": 57.0,
+      "note": "Generic satellite"
+    }
+  ]
+}

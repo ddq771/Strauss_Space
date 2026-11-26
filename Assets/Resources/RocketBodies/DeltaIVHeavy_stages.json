@@ -1,0 +1,48 @@
+{
+  "key": "DeltaIVHeavy",
+  "height_m": 72.0,
+  "stages": [
+    {
+      "name": "Booster_Left",
+      "bottom_m": 0.0,
+      "top_m": 49.0,
+      "note": "Side core: 1 RS-68A"
+    },
+    {
+      "name": "Booster_Right",
+      "bottom_m": 0.0,
+      "top_m": 49.0,
+      "note": "Side core: 1 RS-68A"
+    },
+    {
+      "name": "CentreCore",
+      "bottom_m": 0.0,
+      "top_m": 47.0,
+      "note": "Centre core: 1 RS-68A"
+    },
+    {
+      "name": "Fairing_A",
+      "bottom_m": 51.0,
+      "top_m": 72.0,
+      "note": "Fairing half"
+    },
+    {
+      "name": "Fairing_B",
+      "bottom_m": 51.0,
+      "top_m": 72.0,
+      "note": "Fairing half"
+    },
+    {
+      "name": "DCSS",
+      "bottom_m": 44.1,
+      "top_m": 53.0,
+      "note": "Delta Cryogenic Second Stage: 1 RL10B-2"
+    },
+    {
+      "name": "Payload",
+      "bottom_m": 53.5,
+      "top_m": 61.0,
+      "note": "Generic satellite"
+    }
+  ]
+}

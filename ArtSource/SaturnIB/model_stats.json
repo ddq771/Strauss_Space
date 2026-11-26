@@ -1,0 +1,17 @@
+{
+  "triangles": 2728,
+  "mesh_objects": 9,
+  "materials": 4,
+  "stages": [
+    "SIB",
+    "LES",
+    "SIVB",
+    "Payload"
+  ],
+  "bounds_m": {
+    "x": 10.9975,
+    "y": 10.9974,
+    "z": 67.86
+  },
+  "note": "Visual approximation; proportions and details are approximate, not scaled CAD."
+}

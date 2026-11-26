@@ -598,10 +598,41 @@ public sealed class RocketAssemblyController : MonoBehaviour
     // and the fixed ones an outer ring between them, as on the real
     // vehicle; a pair sits either side of the axis (the Shuttle's OMS).
     // Uniform sets keep the centre + rings layout (null).
+    // A preset can instead give its first stage's real engine layout
+    // (RocketPresets.Preset.engineLayout) - used where whole groups of
+    // engines shut down mid-burn, so the ones left still sit symmetrically.
     private Vector3[] BodyThrustPositions()
     {
         var n=SocketCount;
         var result=new Vector3[n];
+        // Preset layout: walk its (count, radius, phase°, offset x) groups,
+        // giving each group's engines consecutive sockets, evenly spaced on
+        // a circle of that radius (a group of one sits at the circle's
+        // centre) round a centre shifted 'offset x' metres sideways - so
+        // Falcon Heavy's three cores, Long March 8A's core and boosters. Only for the first
+        // stage, and only if the groups add up to exactly this many sockets
+        // (otherwise fall through to the automatic layout below).
+        var layoutPlan=activePresetIndex>=0 && stageIndex==0 && !separated ? RocketPresets.All[activePresetIndex].engineLayout : null;
+        if(layoutPlan!=null && layoutPlan.Length%4==0)
+        {
+            var total=0;
+            for(var g=0;g<layoutPlan.Length;g+=4)total+=(int)layoutPlan[g];
+            if(total==n)
+            {
+                var next=0;
+                for(var g=0;g<layoutPlan.Length;g+=4)
+                {
+                    var count=(int)layoutPlan[g];var radius=layoutPlan[g+1];var phase=layoutPlan[g+2]*Mathf.Deg2Rad;
+                    var centre=new Vector3(layoutPlan[g+3],0,0);
+                    for(var k=0;k<count;k++)
+                    {
+                        var a=phase+k*2*Mathf.PI/count;
+                        result[next++]=count==1?centre:centre+new Vector3(Mathf.Cos(a),0,Mathf.Sin(a))*radius;
+                    }
+                }
+                return result;
+            }
+        }
         var steering=new List<int>();var fixedEngines=new List<int>();
         for(var i=0;i<n;i++)
         {

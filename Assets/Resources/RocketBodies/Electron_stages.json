@@ -1,0 +1,36 @@
+{
+  "key": "Electron",
+  "height_m": 18.0,
+  "stages": [
+    {
+      "name": "FirstStage",
+      "bottom_m": 0.0,
+      "top_m": 12.1,
+      "note": "First stage: 9 Rutherford"
+    },
+    {
+      "name": "Fairing_A",
+      "bottom_m": 15.3,
+      "top_m": 18.0,
+      "note": "Fairing half"
+    },
+    {
+      "name": "Fairing_B",
+      "bottom_m": 15.3,
+      "top_m": 18.0,
+      "note": "Fairing half"
+    },
+    {
+      "name": "SecondStage",
+      "bottom_m": 11.5,
+      "top_m": 15.3,
+      "note": "Second stage: 1 Rutherford Vacuum"
+    },
+    {
+      "name": "Payload",
+      "bottom_m": 15.3,
+      "top_m": 16.5,
+      "note": "Kick stage and satellite"
+    }
+  ]
+}
