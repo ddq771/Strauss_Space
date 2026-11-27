@@ -103,6 +103,23 @@ public static class RocketPresets
             bare = bare,
             entryDirection = HeatZone.Base,
         };
+
+        /// <summary>A payload fairing over the nose with cork ablative insulation, as on
+        /// Atlas V: during the climb the nose takes the heating (it faces the air), and
+        /// a booster still accelerating hard low in the atmosphere - Atlas V reaches
+        /// ~3.3 km/s below 70 km - heats it far past the 500 °C bare aluminium is rated
+        /// for (~60 kW/m² there, a radiative balance near 770 °C). Cork chars and
+        /// carries the heat away instead; rated here to 1,000 °C. The zone covers
+        /// the whole forward-facing half (90°): ReentryHeating models the hull as a
+        /// sphere of patches, and climbing nose-first every patch the air meets
+        /// is the fairing - the aluminium tank sides behind it meet the air
+        /// edge-on. (A 45° nose cap alone left the patches just outside it, still
+        /// facing the flow, overheating as bare aluminium with a heavier payload.)</summary>
+        public static HeatProtection FairingNose => new HeatProtection
+        {
+            zones = new[] { new HeatZone { name = "payload fairing (cork insulation)", direction = HeatZone.Nose, halfAngle = 90, limitC = 1000f, emissivity = .85f, heatCapacity = 12000f } },
+            bare = HeatZone.Aluminium,
+        };
     }
 
     public struct StageSpec
@@ -774,6 +791,9 @@ public static class RocketPresets
         new()
         {
             // Atlas V 401 (no solids, 4-m fairing, single-engine Centaur): 58.3 m, ~335 t.
+            // The fairing's cork insulation protects the nose on the way up
+            // (without it, the climb burned the nose off at T+3:40).
+            firstStageHeat = HeatProtection.FairingNose,
             description = "ULA's workhorse since 2002: a Russian RD-180 on the Common Core Booster, then Centaur with one RL10.",
             name = "Atlas V 401", bodyModelKey = "AtlasV", engineId = "RD180", engineCount = 1,
             bodyDiameter = 3.81f, bodyHeight = 46.3f, noseHeight = 9f, engineHeight = 3f,
@@ -802,9 +822,16 @@ public static class RocketPresets
             },
             payloadMass = 5000f,
             payloadMax = 9797f,       // to LEO, 28.7°
-            // RD-180 throttled through Max Q, and back late in the burn to
-            // hold the g-load; booster engine cutoff ~T+4:10 at depletion.
-            throttleProgram = new[] { 0f, 1f, 30f, 1f, 40f, .92f, 75f, .92f, 85f, 1f, 170f, 1f, 190f, .75f },
+            // RD-180 at full thrust until late in the burn, then back to 75 %
+            // to hold the g-load; booster engine cutoff ~T+4:10 at depletion.
+            // No Max Q throttle-down: with no solids the 401 lifts off at
+            // only 1.16× its weight, and cutting to 92 % from T+40-75 s, when
+            // it's slowest, let gravity bend its path over - the steering
+            // can't hold the nose more than a few degrees off the airflow
+            // there - until it flew nearly level at 40 km, 3 km/s, and the
+            // nose burned off. (The 431's solids give it thrust to spare, so
+            // it keeps the throttle-down.)
+            throttleProgram = new[] { 0f, 1f, 170f, 1f, 190f, .75f },
         },
         new()
         {
@@ -813,6 +840,7 @@ public static class RocketPresets
             // 15.3 t to LEO.
             // Aero: three solids add area low down - near neutral.
             centerOfPressure = .45f, normalForceSlope = 3f,
+            firstStageHeat = HeatProtection.FairingNose,   // as on the 401
             description = "Atlas V with three solid boosters strapped to the RD-180 core: the 400 series' heavier lifter.",
             name = "Atlas V 431", bodyModelKey = "AtlasV431", engineId = "RD180", engineCount = 1,
             solidBoosterId = "AJ60A", solidBoosterCount = 3,
@@ -841,8 +869,9 @@ public static class RocketPresets
             },
             payloadMass = 10000f,
             payloadMax = 15260f,      // to LEO, 28.5°
-            // Same RD-180 program as the 401: down through Max Q, and late in
-            // the burn to hold the g-load.
+            // RD-180 down to 92 % through Max Q (the solids give the 431
+            // thrust to spare), and back to 75 % late in the burn to hold
+            // the g-load.
             throttleProgram = new[] { 0f, 1f, 30f, 1f, 40f, .92f, 75f, .92f, 85f, 1f, 170f, 1f, 190f, .75f },
         },
         new()
