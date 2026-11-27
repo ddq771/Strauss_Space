@@ -4,6 +4,33 @@ using System.Globalization;
 using System.IO;
 using UnityEngine;
 
+// STUDY: ==================== STUDY GUIDE: Autopilot ====================
+// STUDY: WHAT: flies the rocket by itself - to low orbit, the max orbit, a typed
+// STUDY: height, or the Moon. Added to the rocket at scene load (Attach).
+// STUDY: HOW IT DRIVES THE ROCKET: never touches physics directly. It sets
+// STUDY:   assembly.AutopilotAttitude + AutopilotSteering (SAS then holds that
+// STUDY:   direction with the engine gimbals / RCS), calls SetThrottle -> assembly.
+// STUDY:   SetAutopilotThrottle, and turns on auto-staging.
+// STUDY: THE STATE MACHINE: 'step' (enum Step). FixedUpdate runs Ascent() during
+// STUDY:   the climb, Maneuver() for every burn after. Each burn = Plan() (when,
+// STUDY:   which way = Steer, what ends it = Cutoff) -> coast -> turn -> burn ->
+// STUDY:   CutoffReached() -> Advance() picks the next step.
+// STUDY: FLOWS:
+// STUDY:   Low orbit:  Ascent -> Insert -> Done
+// STUDY:   Max orbit:  ... -> Raise -> Circularize -> Done   (or the escape pop-up ->
+// STUDY:               Escape: burn everything)
+// STUDY:   Custom:     ... -> Raise/Lower -> Circularize/LowerCircularize -> Done
+// STUDY:   Moon:       Window -> Ascent -> Insert -> Tli -> Mcc1 -> Mcc2 -> Loi -> Done
+// STUDY: SECTIONS (each starts with a "// ---" line):
+// STUDY:   Engage / disengage ...... starting, stopping, Fail, Finish
+// STUDY:   Clock and frames ........ Now, the non-rotating "I" frame, orbit elements
+// STUDY:   Each frame .............. Update: pilot keys take over, time warp control
+// STUDY:   Each physics step ....... FixedUpdate -> Ascent (gravity turn + guidance)
+// STUDY:   Burns ................... Maneuver, BurnDirection, CutoffReached, Plan...
+// STUDY:   Ascent simulation ....... PredictMaxOrbit: flies a copy of the ascent in
+// STUDY:                             maths on the pad to predict the result
+// STUDY:   The Moon ................ TLI search, course corrections, LOI
+// STUDY:   Panel ................... OnGUI: the AUTOPILOT box and the escape pop-up
 
 /// <summary>
 /// Flies the rocket by itself - to a low Earth parking orbit, to the highest
@@ -246,12 +273,36 @@ public sealed class Autopilot : MonoBehaviour
         // LiftOff turns that into an actual recording.)
         recording = false; FlightTag = ""; customFixes = 0;
         escapeChoice = EscapeChoice.Ask; CloseEscapePrompt();
-        predictedMax = destination == Destination.MaxOrbit || destination == Destination.CustomOrbit ? PredictMaxOrbit(out _) : -1;
+        // The pad prediction flies the ascent the way this mission will: the
+        // core stage is cut once the high point reaches the mission's height
+        // (custom, or the parking orbit for low orbit - see Ascent); for the
+        // maximum orbit and the Moon it burns out. Run for every destination
+        // on the pad (so any launch can be refused if it won't make orbit),
+        // and in orbit for the maximum and custom orbits.
+        var padLaunch = !rocket.Launched;
+        predictedMax = padLaunch || destination == Destination.MaxOrbit || destination == Destination.CustomOrbit
+            ? PredictMaxOrbit(out _, destination == Destination.CustomOrbit ? CustomAltitude
+                                    : destination == Destination.LowOrbit ? AscentAltitude : double.PositiveInfinity) : -1;
         // Custom orbit from the pad: the pre-launch simulation already says
         // the highest circular orbit this rocket reaches (predictedMax, m
         // altitude; −1 = it can't simulate one). If the typed height is above
         // that, refuse now rather than strand the rocket half-way.
-        if (destination == Destination.CustomOrbit && !rocket.Launched && predictedMax > 0 && CustomAltitude > predictedMax + 1000)
+        // Refused, on the pad:
+        //  * when the simulated ascent doesn't reach orbit at all (it used to
+        //    launch anyway - Falcon 9 with 22.8 t, Saturn IB with 21 t and
+        //    others then ran out of propellant on the way up, as predicted);
+        //  * when the Δv it leaves in the parking orbit can't pay for the
+        //    burns from that orbit (its real low and high points) to a round
+        //    orbit at the typed height (PredictedLeftAtHeight < 0). No 5 %
+        //    reserve here: the prediction is now within ~±150 m/s, the reserve
+        //    refused flights that make it, and once in orbit the autopilot
+        //    checks again with the Δv it really has before going on.
+        if (padLaunch && predictedMax < 0)
+        {
+            Fail("this rocket won't reach orbit with this load" + (AscentSimNote.Length > 0 ? " (" + AscentSimNote + ")" : "") + ".");
+            return;
+        }
+        if (destination == Destination.CustomOrbit && !rocket.Launched && PredictedLeftAtHeight < 0)
         {
             Fail("this rocket can reach at most ≈ " + TrajectoryDisplay.Km(predictedMax) + ".");
             return;
@@ -542,7 +593,10 @@ public sealed class Autopilot : MonoBehaviour
         if (!rocket.Launched || flight.Crashed)
         {
             if (flight.Crashed && Engaged) Fail("vehicle lost.");
-            else if (!rocket.Launched) Disengage();
+            // On the pad and not flying: switch off - unless a launch was just
+            // refused (Failed), whose "Stopped: why" must stay for the pilot
+            // to read (switching off overwrote it with "Off").
+            else if (!rocket.Launched && step != Step.Failed) Disengage();
             return;
         }
         if (!Engaged) return;
@@ -619,6 +673,7 @@ public sealed class Autopilot : MonoBehaviour
 
     // --- Each physics step: guidance -----------------------------------------------
 
+    // STUDY: PHYSICS STEP ENTRY: runs the current step - Ascent() during the climb, Maneuver() for every burn after.
     // Every physics step: the guidance itself (steering and throttle). On
     // rails the body is moved along its orbit by TimeWarp and can't be
     // steered, so nothing is done then.
@@ -684,6 +739,7 @@ public sealed class Autopilot : MonoBehaviour
         assembly.SetAutopilotThrottle(throttle);
     }
 
+    // STUDY: THE CLIMB: vertical rise -> gravity-turn pitch curve -> closed-loop guidance above 35 km; ends in Parked() when in orbit.
     // The ascent guidance, run every physics step. How, in order:
     //  1. state: position r, inertial velocity v, the local vertical 'up',
     //     vertical speed vz = v·up, and 'along' - the direction of travel in
@@ -938,6 +994,7 @@ public sealed class Autopilot : MonoBehaviour
 
     // --- Burns -------------------------------------------------------------------
 
+    // STUDY: EVERY BURN AFTER THE CLIMB: plan (Plan) -> coast -> turn -> burn -> CutoffReached -> Advance.
     // Every burn after the ascent, run every physics step. How:
     //  * not planned yet: if a replanning time is set and not reached,
     //    coast pointing prograde; otherwise Plan() the burn for this step;
@@ -1166,6 +1223,7 @@ public sealed class Autopilot : MonoBehaviour
         }
     }
 
+    // STUDY: WHICH PLANNER: picks the planner for the current step (PlanRaise, PlanLower, PlanTli, PlanLoi...).
     // Plans the burn for the current step: reads the installed engines'
     // vacuum thrust and Isp (for burn times), then hands over to the step's
     // planner, which sets burnStart, steer, cutoff and cutoffValue. False =
@@ -1431,6 +1489,7 @@ public sealed class Autopilot : MonoBehaviour
     /// <summary>Why the last ascent simulation didn't make orbit ("" = it did).</summary>
     public string AscentSimNote { get; private set; } = "";
 
+    // STUDY: PAD PREDICTION: shown in the panel before launch; SimulateAscent flies the climb in maths, then HighestCircular finds the orbit the Δv left reaches.
     /// <summary>
     /// The highest circular orbit (m altitude) this rocket should reach, from
     /// its Δv now. How: on the pad, SimulateAscent flies this rocket's ascent
@@ -1441,7 +1500,19 @@ public sealed class Autopilot : MonoBehaviour
     /// radius. After a 5% reserve and 30 m/s for steering, HighestCircular
     /// finds where that budget gets to. -1 if it can't reach orbit at all.
     /// </summary>
-    public double PredictMaxOrbit(out double deltaV)
+    public double PredictMaxOrbit(out double deltaV) => PredictMaxOrbit(out deltaV, double.PositiveInfinity);
+
+    // The same, for a flight whose core stage is cut once the orbit's high
+    // point reaches 'burnOutAltitude' (m; +∞ = burnt out, as for the
+    // maximum orbit) - so the simulated ascent ends in the orbit the real
+    // one will (the core's leftover propellant isn't spent stretching it),
+    // with the upper stage's propellant all still there. From that orbit's
+    // real low and high points (not its mean height: a core stage that ran
+    // long leaves 200 × 1,000+ km), HighestCircularFrom finds how high a
+    // round orbit the budget pays for. The parking orbit, the budget after
+    // the reserve and the result are kept (predictedPe/Ap, predictedBudget)
+    // for Engage's go/no-go on a custom height.
+    public double PredictMaxOrbit(out double deltaV, double burnOutAltitude)
     {
         deltaV = 0;
         if (planet == null || flight == null) return -1;
@@ -1449,21 +1520,76 @@ public sealed class Autopilot : MonoBehaviour
         radius = planet.Radius;
         deltaV = RemainingDeltaV();
         GetState(out var r, out var v);
-        double r1, budget;
+        double pe, ap, budget;
         if (!rocket.Launched)
         {
-            budget = SimulateAscentBest(out r1);
+            budget = SimulateAscentBest(out pe, out ap, radius + burnOutAltitude);
             PredictedAscentDeltaV = budget >= 0 ? simSpent : -1;
         }
         else
         {
-            Elements(r, v, out var pe, out var ap, out _);
+            Elements(r, v, out pe, out ap, out _);
             if (pe - radius < 100000) return -1;   // not in orbit yet
-            r1 = (pe + ap) / 2;
             budget = deltaV;
         }
+        PredictedLeftAtHeight = double.NaN;
         if (budget < 0) return -1;
-        return HighestCircular(r1, budget * (1 - DeltaVReserve) - 30) - radius;
+        predictedPe = pe; predictedAp = ap;
+        PredictedLeftAtHeight = double.IsInfinity(burnOutAltitude) ? double.NaN : budget - CostToCircular(pe, ap, radius + burnOutAltitude);
+        predictedBudget = budget * (1 - DeltaVReserve) - 30;
+        return HighestCircularFrom(pe, ap, predictedBudget) - radius;
+    }
+    private double predictedPe, predictedAp, predictedBudget;
+    /// <summary>Δv (m/s) the last pad prediction expects to have left once in a
+    /// round orbit at its burn-out height (before any reserve); NaN when it
+    /// was for the maximum orbit. Negative = short by that much.</summary>
+    public double PredictedLeftAtHeight { get; private set; } = double.NaN;
+
+    // Speed (m/s) at radius r on an orbit of semi-major axis a (vis-viva).
+    private double Vis(double r, double a) => Math.Sqrt(Math.Max(0, mu * (2 / r - 1 / a)));
+
+    // Δv (m/s) from an orbit with low point 'pe' and high point 'ap' (radii)
+    // to a round orbit of radius 'rt', flown the way the autopilot flies a
+    // custom orbit (StartCustomOrbit):
+    //  * rt at or above the high point: a prograde burn at the low point
+    //    stretching the high point out to rt, then one at rt to round it off
+    //    (rt = ap: only the rounding-off burn);
+    //  * rt between the two: at the high point raise the low point to rt,
+    //    then at rt bring the high point down to it;
+    //  * rt below the low point: the mirror - at the high point lower the
+    //    low point to rt, then at rt bring the high point down.
+    // Each burn is the speed wanted there minus the speed it has, from
+    // vis-viva with the old and new ellipses' semi-major axes.
+    private double CostToCircular(double pe, double ap, double rt)
+    {
+        var a = (pe + ap) / 2;
+        if (rt >= ap)
+            return Vis(pe, (pe + rt) / 2) - Vis(pe, a) + Math.Sqrt(mu / rt) - Vis(rt, (pe + rt) / 2);
+        if (rt >= pe)
+            return Vis(ap, (rt + ap) / 2) - Vis(ap, a) + Vis(rt, (rt + ap) / 2) - Math.Sqrt(mu / rt);
+        return Vis(ap, a) - Vis(ap, (rt + ap) / 2) + Vis(rt, (rt + ap) / 2) - Math.Sqrt(mu / rt);
+    }
+
+    // The highest round orbit (radius, m) a budget buys from an orbit with
+    // low point 'pe' and high point 'ap'. How: if it can't even round the
+    // orbit off at its high point, fall back to the mean-radius estimate
+    // (HighestCircular); otherwise CostToCircular rises steadily with the
+    // target above the high point (up to the Hohmann peak, ~15.6× the
+    // radius), so bisection between the high point and that peak (or the
+    // highest stable orbit, if lower) finds where the cost meets the budget.
+    private double HighestCircularFrom(double pe, double ap, double budget)
+    {
+        if (budget <= 0) return (pe + ap) / 2;
+        if (CostToCircular(pe, ap, ap) > budget) return HighestCircular((pe + ap) / 2, budget);
+        var hi = Math.Min(StableOrbitRadius, HohmannPeakRatio * pe);
+        if (hi <= ap || CostToCircular(pe, ap, hi) <= budget) return Math.Max(ap, hi);
+        var lo = ap;
+        for (var i = 0; i < 60; i++)
+        {
+            var mid = (lo + hi) / 2;
+            if (CostToCircular(pe, ap, mid) <= budget) lo = mid; else hi = mid;
+        }
+        return lo;
     }
 
     // --- Ascent simulation (the pad prediction) ------------------------------------
@@ -1476,12 +1602,17 @@ public sealed class Autopilot : MonoBehaviour
     // 70 km (1 = exactly Ascent()'s program).
     private static readonly double[] SimSteepness = { 1, .85, .7, .55, .4 };
 
-    // The real flights spend a little more than the ideal simulation - the
-    // vehicle wobbling round the commanded attitude, the engines swivelled
-    // off-axis to steer, staging transients. Measured (ascent Δv flown vs
-    // simulated): Falcon 9 15 t +2.2 %, Saturn V empty +0.6 %, 45.7 t
-    // +3.1 %, 70 t +3.2 % - so the simulated ascent is charged 2.5 % more.
-    private const double SimSteeringLoss = .025;
+    // How much more the real flights spend than the ideal simulation, as a
+    // share of the ascent's Δv. It was 2.5 % (measured before the linear-
+    // tangent guidance: Falcon 9 15 t +2.2 %, Saturn V +0.6-3.2 %). With
+    // the guidance the real flights are the more efficient ones: measured
+    // against the Δv each really had left at 1,000 km over 60 flights of
+    // 15 rockets, the 2.5 % charge left the prediction ~230 m/s short of
+    // what they had - enough to refuse flights that make it (Shuttle up to
+    // 16 t, SLS 95 t, Vulcan 12.7 t). Without it, it's within ~±150 m/s for
+    // most (it still overrates Long March 8A by ~200, underrates Vostok by
+    // ~450). So no charge.
+    private const double SimSteeringLoss = 0;
     private double simSpent;   // Δv (m/s) the last successful simulated ascent used, with that allowance
 
     /// <summary>
@@ -1497,13 +1628,13 @@ public sealed class Autopilot : MonoBehaviour
     /// flights the first try is within 1-2 % (Falcon 9 with 15 t: 8,900 vs
     /// 9,098 m/s used; empty Saturn V: 9,420 vs 9,479).
     /// </summary>
-    private double SimulateAscentBest(out double orbitRadius)
+    private double SimulateAscentBest(out double orbitPe, out double orbitAp, double burnOutTo)
     {
-        orbitRadius = 0;
+        orbitPe = orbitAp = 0;
         var firstNote = "";
         foreach (var steepness in SimSteepness)
         {
-            var left = SimulateAscent(out orbitRadius, steepness, out var spent);
+            var left = SimulateAscent(out orbitPe, out orbitAp, steepness, burnOutTo, out var spent);
             // Made orbit: charge the steering allowance against what's left -
             // a rocket that only just makes it (the Shuttle) counts as in
             // orbit with nothing to spare, not as failing.
@@ -1517,9 +1648,12 @@ public sealed class Autopilot : MonoBehaviour
     /// <summary>
     /// Flies this rocket's ascent to the parking orbit in a fast simulation
     /// and returns the vacuum Δv (m/s) it will have left in orbit (−1 = it
-    /// doesn't make orbit); 'orbitRadius' = the mean radius of the orbit it
-    /// ends in (m). Weight enters everywhere: the acceleration is thrust ÷
-    /// the real, falling mass, so a heavy rocket climbs slowly and spends
+    /// doesn't make orbit); 'orbitPe' / 'orbitAp' = the low and high points
+    /// (radii, m) of the orbit it ends in. 'burnOutTo': a lower stage already
+    /// in orbit is cut (and the next one lit) once the high point reaches
+    /// this radius, as Ascent() does for a custom orbit; +∞ = burn it out.
+    /// Weight enters everywhere: the acceleration is thrust ÷ the real,
+    /// falling mass, so a heavy rocket climbs slowly and spends
     /// longer holding itself up against gravity, and drag (a force) slows a
     /// light one more. How:
     ///  * the vehicle, as now on the pad: its mass (payload, all stages),
@@ -1544,9 +1678,9 @@ public sealed class Autopilot : MonoBehaviour
     ///    'spent' = the Δv the engines delivered on the way (Σ thrust/mass ×
     ///    step, boosters included, plus the final burn).
     /// </summary>
-    private double SimulateAscent(out double orbitRadius, double steepness, out double spent)
+    private double SimulateAscent(out double orbitPe, out double orbitAp, double steepness, double burnOutTo, out double spent)
     {
-        orbitRadius = 0;
+        orbitPe = orbitAp = 0;
         spent = 0;   // Δv delivered so far: thrust/mass summed over the steps (+ the final burn)
         AscentSimNote = "";
         var isPreset = assembly.IsPreset;
@@ -1601,7 +1735,7 @@ public sealed class Autopilot : MonoBehaviour
             var safeOrbit = pe - radius >= ParkingAltitude - 10000 || (pe - radius > 150000 && ap - radius > ParkingAltitude * 1.5);
             if (safeOrbit && lastStage)
             {
-                orbitRadius = (pe + ap) / 2;
+                orbitPe = pe; orbitAp = ap;
                 return StageDeltaV(engines, mass, propellant) + (isPreset ? LaterStagesDeltaV(preset, k + 1) : 0);
             }
             // High point at the target and a short burn left at the top:
@@ -1612,7 +1746,7 @@ public sealed class Autopilot : MonoBehaviour
                 var vAp = Math.Sqrt(Math.Max(0, 2 * (energy + mu / ap)));
                 if (vAp >= .9 * Math.Sqrt(mu / ap))
                 {
-                    orbitRadius = ap;
+                    orbitPe = orbitAp = ap;
                     spent += Math.Sqrt(mu / ap) - vAp;
                     var left = StageDeltaV(engines, mass, propellant) - (Math.Sqrt(mu / ap) - vAp);
                     if (left < 0) AscentSimNote = "short of the burn to round the orbit off by " + (-left).ToString("N0") + " m/s";
@@ -1620,10 +1754,14 @@ public sealed class Autopilot : MonoBehaviour
                 }
             }
 
+            // A lower stage in orbit whose high point has reached where the
+            // mission is going: cut it and stage, as Ascent() commands MECO.
+            var cutCore = safeOrbit && !lastStage && ap >= burnOutTo - 5000;
+
             // Thrust now (N) and the propellant flows it burns (kg/s).
             var pressure = StandardAtmosphere.Pressure(Math.Max(0, altitude));
             double thrust = 0, liquidFlow = 0, solidFlow = 0;
-            var powered = t >= coastUntil && (cutoffAt <= 0 || stageClock < cutoffAt || (lastStage && k > 0));
+            var powered = !cutCore && t >= coastUntil && (cutoffAt <= 0 || stageClock < cutoffAt || (lastStage && k > 0));
             if (powered && propellant > 0)
             {
                 var throttle = Math.Min(1, ProgramThrottleAt(throttleProgram, stageClock));
@@ -1647,7 +1785,7 @@ public sealed class Autopilot : MonoBehaviour
             // (On the first stage, strap-on solids still burning keep it going.)
             var liquidDone = propellant <= 0 || (cutoffAt > 0 && stageClock >= cutoffAt && !(lastStage && k > 0));
             var solidsDone = k > 0 || solidCount == 0 || solidLeft <= 0;
-            var stageDone = t >= coastUntil && liquidDone && solidsDone;
+            var stageDone = t >= coastUntil && ((liquidDone && solidsDone) || cutCore);
             if (stageDone)
             {
                 if (lastStage)   // nothing left, short of orbit
@@ -2936,6 +3074,7 @@ public sealed class Autopilot : MonoBehaviour
     private string prediction;
     private float nextPrediction;
 
+    // STUDY: THE AUTOPILOT BOX (top right) - buttons call Engage(destination).
     // The AUTOPILOT box, top right (Unity's immediate-mode GUI: redrawn every
     // frame; a button returns true on the frame it's clicked). How: a
     // GUILayout area holds the destination buttons (the active one tinted),

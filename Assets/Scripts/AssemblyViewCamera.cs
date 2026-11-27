@@ -2,6 +2,13 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
+// STUDY: ==================== STUDY GUIDE: AssemblyViewCamera ====================
+// STUDY: WHAT: the main camera. Orbits/pans/zooms around the rocket on the pad and
+// STUDY: in flight (mouse drag, scroll), and zooms out smoothly into the map view
+// STUDY: (whole Earth) and the solar-system view. ApplyPose works out the camera's
+// STUDY: position each LateUpdate. Also draws the rocket marker when it's too small
+// STUDY: to see. ShowRocket/ShowPlanet/ShowAssembly are called by the controller.
+
 [RequireComponent(typeof(Camera))]
 public sealed class AssemblyViewCamera : MonoBehaviour
 {

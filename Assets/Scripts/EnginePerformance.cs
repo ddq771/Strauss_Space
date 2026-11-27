@@ -1,6 +1,16 @@
 using System;
 using UnityEngine;
 
+// STUDY: ==================== STUDY GUIDE: EnginePerformance ====================
+// STUDY: WHAT: engine numbers. EngineParameters = one engine's data (vacuum thrust,
+// STUDY: Isp, sea-level values, mixture ratio, throttle range). Evaluate() gives
+// STUDY: thrust, Isp and mass flow at a throttle and outside air pressure (thrust
+// STUDY: falls by pressure x nozzle exit area as the air thickens). Reference(id)
+// STUDY: holds the published data for each real engine (Merlin, Raptor, F-1, J-2,
+// STUDY: RS-25, RD-107...). SolidMotor: thrust curve of each solid booster.
+// STUDY: USED BY: RocketFlightModel.Step (thrust each step), RocketAssemblyController
+// STUDY: (delta-v, panel), Autopilot (burn times), RocketPresets.
+
 [Serializable]
 public sealed class EngineParameters
 {
@@ -30,6 +40,14 @@ public static class EnginePerformance
         public double thrust, massFlow, fuelFlow, oxidizerFlow, isp, area;
         public bool valid;
     }
+    /// <summary>
+    /// One liquid engine at a throttle setting and ambient pressure (Pa).
+    /// The propellant flow is set by the vacuum rating, ṁ = throttle·F_vac/(g₀·Isp_vac);
+    /// the air pressing on the nozzle exit takes p·A off the thrust, so the
+    /// same flow pushes harder in vacuum than at sea level (and the
+    /// effective Isp, F/(g₀·ṁ), rises with altitude). Not valid below the
+    /// engine's minimum throttle, or where back-pressure cancels the thrust.
+    /// </summary>
     public static Result Evaluate(EngineParameters p,double throttle,double pressure)
     {
         if(p==null || !p.Valid || double.IsNaN(pressure)||double.IsInfinity(pressure)||pressure<0)return default;
@@ -39,7 +57,13 @@ public static class EnginePerformance
         var flow=throttle*p.vacuumThrust/(G0*p.vacuumIsp);
         var thrust=throttle*p.vacuumThrust-pressure*a;
         if(thrust<=0)return new Result{area=a};
-        return new Result{valid=true,area=a,thrust=thrust,massFlow=flow,isp=thrust/(G0*flow),fuelFlow=flow/(1+p.mixtureRatio),oxidizerFlow=flow*p.mixtureRatio/(1+p.mixtureRatio)};
+        return new Result
+        {
+            valid=true,area=a,thrust=thrust,massFlow=flow,
+            isp=thrust/(G0*flow),
+            fuelFlow=flow/(1+p.mixtureRatio),
+            oxidizerFlow=flow*p.mixtureRatio/(1+p.mixtureRatio),
+        };
     }
     /// <summary>
     /// The oxidizer/fuel ratio the engine burns at with these amounts left:
@@ -94,8 +118,6 @@ public static class EnginePerformance
             // Raptor Vacuum: ~2,530 kN, Isp ~380 s, 2.3 m nozzle, fixed (the
             // Ship steers with its sea-level Raptors).
             case "RaptorVac":return new EngineParameters{gimbalRange=0,gimbalRate=0,allowGimbal=false,dryMass=2100,vacuumThrust=2530000,vacuumIsp=380,exitDiameter=2.3f,mixtureRatio=3.6f,minimumThrottle=.4f,fuel="Methane",source="SpaceX Raptor Vacuum (Starship Ship)",dataStatus="Estimated simulation preset"};
-            // RD-0109: Vostok-K Block E. 54.5 kN, Isp 323.5 s; steering nozzles
-            // as an equivalent ±3°.
             // Aerojet Rocketdyne RL10B-2 (SLS ICPS, Delta IV upper stage):
             // 110.1 kN, Isp 465.5 s with its extendable carbon nozzle.
             case "RL10B2":return new EngineParameters{gimbalRange=4,gimbalRate=8,dryMass=301,vacuumThrust=110100,vacuumIsp=465.5f,exitDiameter=2.15f,mixtureRatio=5.88f,fuel="LH2",source="Aerojet Rocketdyne RL10B-2 (SLS ICPS)",dataStatus="Published performance"};
@@ -106,6 +128,8 @@ public static class EnginePerformance
             case "Vulcain2":p=new EngineParameters{gimbalRange=6,gimbalRate=10,dryMass=2100,vacuumThrust=1390000,vacuumIsp=431,mixtureRatio=6.1f,fuel="LH2",source="Safran Vulcain 2 (Ariane 5 ECA main stage)",dataStatus="Published performance / calibrated exit area"};p.exitDiameter=CalibratedDiameter(p.vacuumThrust,960000,1);return p;
             // ArianeGroup HM7B (Ariane 5 ESC-A): 67 kN, Isp 446 s.
             case "HM7B":return new EngineParameters{gimbalRange=4,gimbalRate=6,dryMass=165,vacuumThrust=67000,vacuumIsp=446,exitDiameter=.99f,mixtureRatio=5.0f,fuel="LH2",source="ArianeGroup HM7B (Ariane 5 ESC-A)",dataStatus="Published performance"};
+            // RD-0109: Vostok-K Block E. 54.5 kN, Isp 323.5 s; steering nozzles
+            // as an equivalent ±3°.
             case "RD0109":return new EngineParameters{gimbalRange=3,gimbalRate=10,dryMass=121,vacuumThrust=54500,vacuumIsp=323.5f,exitDiameter=.5f,mixtureRatio=2.5f,source="Kosberg RD-0109 (Vostok-K Block E)",dataStatus="Published performance / estimated geometry"};
             // Space Shuttle OMS (AJ10-190): 26.7 kN each, Isp 316 s, MMH /
             // N2O4, ±6° gimbal.
@@ -215,5 +239,7 @@ public static class EnginePerformance
         }
     }
 
+    // Exit diameter from a published sea-level / vacuum thrust pair: the
+    // difference is one atmosphere on the exit area, F_vac − F_SL = p₀·A.
     private static float CalibratedDiameter(double vacuum,double sea,int count)=>(float)Math.Sqrt(4*(vacuum-sea)/(101325*Math.PI*count));
 }

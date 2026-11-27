@@ -1,5 +1,10 @@
 using UnityEngine;
 
+// STUDY: ==================== STUDY GUIDE: EarthVisuals ====================
+// STUDY: WHAT: visuals only - loads Earth's NASA textures (day, night lights,
+// STUDY: clouds, water mask) into EarthSurface.shader at scene load and keeps the
+// STUDY: cloud layer moving in Update.
+
 /// <summary>
 /// Gives the planet its NASA imagery at runtime (EarthSurface.shader): Blue
 /// Marble day map with a water mask for sunglint, Black Marble city lights,

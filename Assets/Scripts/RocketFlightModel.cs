@@ -1,6 +1,24 @@
 using System;
 using UnityEngine;
 
+// STUDY: ==================== STUDY GUIDE: RocketFlightModel ====================
+// STUDY: WHAT: the rocket's physics apart from gravity - engines, propellant and
+// STUDY: mass, drag, aerodynamic turning forces, solid boosters, the rotating-Earth
+// STUDY: (Coriolis/centrifugal) terms, crashing and burning up.
+// STUDY: TWO ENTRY POINTS EACH PHYSICS STEP:
+// STUDY:   Step(...)    called by Rocket.FixedUpdate only while the engines are lit:
+// STUDY:                per engine EnginePerformance.Evaluate -> AddForceAtPosition,
+// STUDY:                propellant drained, UpdateMass.
+// STUDY:   FixedUpdate  always while flying: mission clock + MECO, ApplyDrag,
+// STUDY:                BurnSolids, ApplyRotatingFrame, ground-impact test.
+// STUDY: READ BY: the panels (Altitude, Mach, Q, Drag...), Autopilot (mass, thrust,
+// STUDY:   propellant left), FlightRecorder, TrajectoryDisplay (drag model).
+// STUDY: SECTIONS: setters used by staging (SetFlightProgram, LoadStagePropellant,
+// STUDY:   SetStageDryMass, JettisonSolids...) ... UpdateMass ... UpdateAtmosphere
+// STUDY:   (air at this altitude) ... ApplyDrag / MachDragFactor ... ApplyAeroTorques
+// STUDY:   ... ApplyRotatingFrame ... Prepare (can it fire? flows) ... Step ...
+// STUDY:   FixedUpdate ... Impact / BurnUp (destruction effects).
+
 [RequireComponent(typeof(RocketAssemblyController))]
 public sealed class RocketFlightModel : MonoBehaviour
 {
@@ -9,9 +27,8 @@ public sealed class RocketFlightModel : MonoBehaviour
     [SerializeField] private bool tanksInitialized;
     [SerializeField] private string fuelType="RP-1";
     [SerializeField] private float initialFill=1;
-    [Tooltip("Drag coefficient used to slow the rocket through the atmosphere. " +
-             "Tuned for a felt, gradual slowdown on ascent/descent rather than " +
-             "to match a real vehicle's measured Cd.")]
+    [Tooltip("Subsonic drag coefficient (Cd) of the body nose-on; scaled with Mach " +
+             "number by MachDragFactor. Presets set their real vehicle's value.")]
     [SerializeField] private float dragCoefficient=0.5f;
     // RocketPreset selection sets this per real vehicle (Starship's blunt
     // hull drags far more than Falcon 9's slender one); the sandbox default
@@ -21,8 +38,8 @@ public sealed class RocketFlightModel : MonoBehaviour
     // Solid rocket boosters (a preset's strap-ons, e.g. the Shuttle's SRBs):
     // their own grain, separate from the liquid tanks; lit at liftoff and
     // burned to depletion along the motor's thrust profile, whatever the
-    // liquid engines and throttle are doing. The spent casings stay attached
-    // (no staging yet).
+    // liquid engines and throttle are doing. Staging drops the spent casings
+    // (JettisonSolids).
     [SerializeField] private string solidId;
     [SerializeField] private int solidCount;
     [SerializeField] private float solidPropellant;
@@ -345,13 +362,14 @@ public sealed class RocketFlightModel : MonoBehaviour
         return MachFactors[^1];
     }
 
+    // STUDY: DRAG: ½ρv²·Cd·A against the airflow (air from UpdateAtmosphere, Cd from MachDragFactor).
     /// <summary>
     /// Applies aerodynamic drag opposing the rocket's velocity:
-    /// F = ½ρv²·Cd(M)·A, with ρ from the standard atmosphere at the real
-    /// local temperature and Cd raised through the transonic region
-    /// (MachDragFactor). Still a single coefficient on the body's own
-    /// cross-section with no separate centre of pressure, so drag never
-    /// turns the vehicle.
+    /// D = ½ρv²·[Cd(M)·A·cos α + 1.2·A_side·sin²α], with ρ from the standard
+    /// atmosphere at the real local temperature and Cd raised through the
+    /// transonic region (MachDragFactor); side-on, the crossflow term takes
+    /// over. Drag acts through the centre of mass; the turning effect of the
+    /// air comes from ApplyAeroTorques, and a lifting body's lift is added here.
     /// </summary>
     private void ApplyDrag(Rigidbody body)
     {
@@ -547,6 +565,7 @@ public sealed class RocketFlightModel : MonoBehaviour
     public readonly float[] SocketThrust=new float[RocketAssemblyController.MaxSockets];
     public float LastStepTime{get;private set;}=-1;
 
+    // STUDY: ENGINES (only while lit): thrust from every engine at its position, propellant drained.
     public void Step(Rigidbody body,float throttle,float dt)
     {
         System.Array.Clear(SocketThrust,0,SocketThrust.Length);
@@ -568,6 +587,7 @@ public sealed class RocketFlightModel : MonoBehaviour
         if(fraction<1 || fuelRemaining<=0 || oxidizerRemaining<=0){Status="Propellant depleted.";rocket.StopEngine();}
     }
 
+    // STUDY: ALWAYS WHILE FLYING: clock/MECO, drag, solids, rotating Earth, ground impact.
     private void FixedUpdate()
     {
         Bind();

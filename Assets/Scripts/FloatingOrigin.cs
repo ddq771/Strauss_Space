@@ -1,6 +1,15 @@
 using System;
 using UnityEngine;
 
+// STUDY: ==================== STUDY GUIDE: FloatingOrigin ====================
+// STUDY: WHAT: float precision. Unity positions are single-precision, good to ~7
+// STUDY: digits; at 384,000 km (the Moon) that's metres of jitter. When the rocket
+// STUDY: gets far from the origin, Shift() moves EVERYTHING (Earth, Moon, rocket,
+// STUDY: lines) back so the rocket is near 0,0,0, and fires the Shifted event so
+// STUDY: scripts holding world positions can adjust. PlanetCentre = where Earth's
+// STUDY: centre is now (in double precision). Also defines Double3, the
+// STUDY: double-precision vector used for all orbit maths.
+
 /// <summary>
 /// Keeps the rocket near the world origin once it heads out toward the
 /// Moon. World positions are single-precision floats in kilometres, so

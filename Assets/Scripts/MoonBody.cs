@@ -1,6 +1,17 @@
 using System;
 using UnityEngine;
 
+// STUDY: ==================== STUDY GUIDE: MoonBody ====================
+// STUDY: WHAT: the Moon, at its real position for the date (Meeus' lunar series in
+// STUDY: Position), tidally locked, with gravity on the rocket, landing / touchdown
+// STUDY: and lift-off, and a fine ground patch under a rocket near the surface.
+// STUDY: EACH STEP (FixedUpdate): Place the Moon -> measure the rocket relative to
+// STUDY: it (altitude, speeds, RocketNear = inside its sphere of influence) -> if
+// STUDY: landed pin it, else apply the Moon's pull (minus the pull on Earth, since
+// STUDY: the scene is centred on Earth) and check for touchdown.
+// STUDY: USED BY: Autopilot and TrajectoryDisplay (OffsetFromEarth), SAS modes near
+// STUDY: the Moon, the side panel's Moon readouts.
+
 /// <summary>
 /// The Moon, where it really is on the current date.
 ///

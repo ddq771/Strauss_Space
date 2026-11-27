@@ -4,6 +4,74 @@ using System.IO;
 using System.Globalization;
 using UnityEngine;
 
+// STUDY: ==================== PROJECT MAP (start reading here) ====================
+// STUDY: Strauss Space is one Unity scene (PlanetScene) at real scale: 1 Unity unit =
+// STUDY: 1 km (PlanetBody.WorldUnitsPerMeter = 0.001), so every force in metres is
+// STUDY: multiplied by 0.001 before it's applied. The launch pad sits at the world
+// STUDY: origin; Earth's centre is 6,371 units below.
+// STUDY:
+// STUDY: WHO DOES WHAT
+// STUDY:   Menus / UI      LaunchMenu (start screens) -> this file (side panel,
+// STUDY:                   staging stack, keys) + Autopilot (top-right box)
+// STUDY:   The vehicle     Rocket (rigidbody, mesh, ignition, launch clamp)
+// STUDY:                   RocketFlightModel (engines, propellant, drag, aero forces)
+// STUDY:                   EnginePerformance (thrust/Isp of each engine model)
+// STUDY:                   RocketPresets (the real rockets' data: stages, masses...)
+// STUDY:                   ReentryHeating (heat, burn-up, heat-zone map, glow)
+// STUDY:                   EnginePlumes (exhaust visuals), DroppedStage (spent stages)
+// STUDY:   The world       PlanetBody (Earth: gravity, mesh, spin)
+// STUDY:                   MoonBody (the Moon: ephemeris, gravity, landing)
+// STUDY:                   SolarSystem (date/clock, Sun, Earth's orbit, Sun tide)
+// STUDY:                   StandardAtmosphere (air maths) / Atmosphere (sky visuals)
+// STUDY:                   EarthVisuals (Earth textures)
+// STUDY:   Time & space    TimeWarp (physics warp and "on rails" Kepler warp)
+// STUDY:                   FloatingOrigin (moves everything back near 0,0,0 far out)
+// STUDY:   Prediction      TrajectoryDisplay (predicted path, Ap/Pe markers)
+// STUDY:                   EarthMoonDynamics (Earth+Moon+Sun coast integrator)
+// STUDY:   Cameras         AssemblyViewCamera (main camera: pad, flight, map views)
+// STUDY:                   RocketCameraController (older local/world camera switch)
+// STUDY:   Records         FlightRecorder (CSV telemetry into Assets/Data)
+// STUDY:   Sandbox parts   EngineCatalog, ProceduralEngine, ProceduralPropellantTank,
+// STUDY:                   RocketMountFrame, AssemblySelectable
+// STUDY:   Editor/         setup tools and headless checks (not in the game)
+// STUDY:
+// STUDY: ONE PHYSICS STEP (FixedUpdate, 50 per second x warp)
+// STUDY:   PlanetBody   adds Earth's gravity to every rigidbody
+// STUDY:   MoonBody     moves the Moon to today's position, adds its pull (tidal)
+// STUDY:   SolarSystem  adds the Sun's tidal pull
+// STUDY:   Rocket       if the engine is lit -> RocketFlightModel.Step (thrust per
+// STUDY:                engine, propellant used, mass updated)
+// STUDY:   RocketFlightModel  drag, solid boosters, rotating-Earth terms, impact test
+// STUDY:   this file    entry aerodynamics + engine gimbal steering (SAS)
+// STUDY:   Autopilot    guidance: where to point, throttle, when to burn
+// STUDY:   ReentryHeating     heats 96 surface patches, may burn the vehicle up
+// STUDY:   then Unity's PhysX integrates all those forces into motion.
+// STUDY: EACH FRAME (Update/LateUpdate/OnGUI): keys, staging, camera, plumes, the
+// STUDY:   predicted trajectory, and all the IMGUI panels.
+// STUDY:
+// STUDY: THIS FILE: RocketAssemblyController - the hub. Two jobs:
+// STUDY:   1. On the pad: the assembly sandbox (place engines, frame, tanks) or load
+// STUDY:      a real rocket from RocketPresets (LoadPreset).
+// STUDY:   2. In flight: the pilot's side of things - keys and throttle, SAS and
+// STUDY:      engine gimbals, staging and separation, the left panel and the staging
+// STUDY:      stack, payload, delta-v per stage, re-entry attitude, hooks the
+// STUDY:      Autopilot drives the rocket through.
+// STUDY: SECTIONS (search for these names):
+// STUDY:   InitializeAssembly / Rebuild ....... builds the sandbox rocket from 'layout'
+// STUDY:   ParameterEditor / FlightControls ... the left panel (pad / flight)
+// STUDY:   FlightFormulas ..................... the "Show formulas" text
+// STUDY:   --- Staging ........................ UpdateStaging, Separate, Ignite, Detach
+// STUDY:   --- KSP-style staging stack ........ StagingStackGUI (bottom right)
+// STUDY:   --- Delta-v ........................ StageDeltaV (rocket equation per stage)
+// STUDY:   --- Payload ........................ PayloadControls, SetPayload
+// STUDY:   --- Re-entry ....................... CurrentHeatProtection, TileAxis, MoonGUI
+// STUDY:   --- Autopilot hooks ................ what Autopilot.cs calls
+// STUDY:   FixedUpdate / UpdateFlightGimbals .. steering by gimballing engines
+// STUDY:   --- Attitude control with engines off  SAS modes, RCS, re-entry attitude
+// STUDY:   Update / LateUpdate ................ keys, staging, throttle each frame
+// STUDY:   LoadPreset / ExitPreset ............ switch to/from a real rocket
+// STUDY:   OnGUI .............................. draws the whole left panel
+
 [RequireComponent(typeof(Rocket))]
 public sealed class RocketAssemblyController : MonoBehaviour
 {
@@ -130,6 +198,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         if(Application.isPlaying)InitializeAssembly();
     }
     private void Start() => InitializeAssembly();
+    // STUDY: SANDBOX SETUP: runs once at Start - loads the engine catalog and builds the default sandbox rocket (Rebuild).
     private void InitializeAssembly()
     {
         if(initialized)return;
@@ -226,6 +295,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
             if(showFormulas)GUILayout.Label("Flow = "+commandedThrottle.ToString("F2")+" × "+p.vacuumThrust.ToString("F0")+" / (9.80665 × "+p.vacuumIsp.ToString("F1")+") = "+result.massFlow.ToString("F2")+" kg/s",new GUIStyle(GUI.skin.label){wordWrap=true});
         }
     }
+    // STUDY: LEFT PANEL IN FLIGHT: called from OnGUI inside the scroll view; every GUILayout line below is one row of the panel.
     private void FlightControls()
     {
         if(flight==null)return;
@@ -317,9 +387,25 @@ public sealed class RocketAssemblyController : MonoBehaviour
         GUILayout.Space(10);
     }
 
-    // The physics acting on the vehicle in flight, as the simulation applies it.
+    // The physics acting on the vehicle in flight, as the simulation applies
+    // it: for each part, the script that does it, how it works, then its
+    // equations.
     private const string FlightFormulas=
-        "<b>Atmosphere (US Standard Atmosphere 1976)</b>\n"+
+        "<i>Each physics step (FixedUpdate): Rocket.cs fires the engines through "+
+        "RocketFlightModel.Step; RocketFlightModel reads the air at the rocket's "+
+        "altitude and applies drag, the air's turning forces, solid boosters and "+
+        "the rotating-Earth terms; PlanetBody and MoonBody add gravity. All are "+
+        "forces on the rocket's Rigidbody, which Unity's physics engine (PhysX) "+
+        "then moves. Units are SI; "+
+        "the scene is in kilometres (PlanetBody.WorldUnitsPerMeter = 0.001), so "+
+        "every force is scaled by that before it's applied.</i>\n\n"+
+
+        "<b>Atmosphere</b> - StandardAtmosphere.cs\n"+
+        "<i>US Standard Atmosphere 1976: seven layers, each with a fixed "+
+        "temperature gradient (falling 6.5 K/km to 11 km, then constant, warming, "+
+        "cooling). Pressure follows from hydrostatic balance inside each layer, "+
+        "density from the ideal gas law. Called by RocketFlightModel."+
+        "UpdateAtmosphere every step; thrust, drag and heating all use it.</i>\n"+
         "Altitude h = |r| − R_earth\n"+
         "Geopotential H = r0·h / (r0 + h)\n"+
         "Temperature T = Tb + L·(H − Hb)\n"+
@@ -327,38 +413,108 @@ public sealed class RocketAssemblyController : MonoBehaviour
         "   isothermal layer: p = pb·e^(−g0M·ΔH / R*Tb)\n"+
         "Density ρ = p / (287.05·T)\n"+
         "Speed of sound a = √(1.4·287.05·T), Mach = v / a\n\n"+
-        "<b>Propulsion</b>\n"+
+
+        "<b>Propulsion</b> - EnginePerformance.cs, RocketFlightModel.Step\n"+
+        "<i>Each engine's propellant flow is fixed by its vacuum rating and the "+
+        "throttle. The air pressing on the nozzle exit subtracts p·A, so the "+
+        "same engine gains thrust as it climbs. Step() pushes each engine's "+
+        "thrust at its own mount point along its gimballed direction, and takes "+
+        "the flow out of the tanks. The flight program (RocketPresets) can cap the "+
+        "throttle and shut engines down at set times, like the real vehicle. Solid "+
+        "boosters (SolidMotor) follow their grain's thrust curve and can't be "+
+        "throttled or shut down.</i>\n"+
         "Exit area A = Σ π·D² / 4\n"+
         "Mass flow mdot = throttle·F_vac / (g0·Isp_vac)\n"+
         "Thrust F = throttle·F_vac − p·A\n"+
         "Fuel flow = mdot / (1 + O/F), LOX flow = mdot·(O/F) / (1 + O/F)\n"+
         "Solid motor F = frac(t)·F_peak − p·A, mdot = frac(t)·F_peak / (g0·Isp)\n"+
         "TWR = F / (m·g_local)\n\n"+
-        "<b>Mass</b>\n"+
+
+        "<b>Mass</b> - RocketFlightModel.UpdateMass, RocketAssemblyController.StageDeltaV\n"+
+        "<i>Mass is the dry mass plus whatever propellant is left, recomputed "+
+        "after every burn step. The centre of mass moves as the tanks drain, which "+
+        "changes how much leverage the engines and the air have. Δv per stage "+
+        "uses the vacuum Isp of that stage's engines.</i>\n"+
         "dm/dt = −mdot\n"+
         "Centre of mass = Σ mi·xi / Σ mi\n"+
         "Inertia I = m·(3r² + h²) / 12, I_roll = m·r² / 2\n"+
         "Δv = Isp·g0·ln(m0 / m1)\n\n"+
-        "<b>Gravity</b>\n"+
+
+        "<b>Gravity</b> - PlanetBody.cs, MoonBody.cs\n"+
+        "<i>PlanetBody pulls every Rigidbody toward Earth's centre each step "+
+        "(inverse square). MoonBody adds the Moon's pull minus the pull it also "+
+        "puts on Earth (only the difference matters in an Earth-centred scene); "+
+        "its position comes from the Meeus lunar ephemeris for the sim date.</i>\n"+
         "Earth g = G·M / r²\n"+
         "Moon (tidal) a = μ_M·(r_m − r) / |r_m − r|³ − μ_M·r_m / |r_m|³\n"+
         "Sun (tidal) a = μ_S·(r_s − r) / |r_s − r|³ − μ_S·r_s / |r_s|³\n\n"+
-        "<b>Rotating Earth</b>\n"+
+
+        "<b>Rotating Earth</b> - RocketFlightModel.ApplyRotatingFrame\n"+
+        "<i>The scene is fixed to the ground, which turns once a sidereal day, "+
+        "so motion is measured in a rotating frame. The Coriolis and centrifugal "+
+        "terms make that correct: they give an eastward launch the ground's "+
+        "~463 m/s at the equator, and bend orbits as seen from the ground.</i>\n"+
         "a = −2ω × v − ω × (ω × r), ω = 2π / 86164.09 s\n"+
         "Orbital speed = |v + ω × r|\n\n"+
-        "<b>Aerodynamics</b>\n"+
+
+        "<b>Aerodynamics</b> - RocketFlightModel.ApplyDrag, ApplyAeroTorques\n"+
+        "<i>Drag opposes the motion through the air. Nose-on it uses the body's "+
+        "cross-section and Cd (raised through Mach 1 by the Mach factor); side-on "+
+        "it uses the body's whole side. At an angle of attack, a sideways normal "+
+        "force acts at the centre of pressure: behind the centre of mass it "+
+        "weathervanes the vehicle into the airflow (fins), ahead of it it tries "+
+        "to flip it (finless Falcon 9, Starship). Damping resists swinging. All "+
+        "of it scales with q, so it peaks at Max Q and fades above ~50 km.</i>\n"+
         "Dynamic pressure q = ½·ρ·v²\n"+
         "Drag D = q·[Cd·f(M)·A·cos α + 1.2·A_side·sin²α]\n"+
         "   f(M): 1 below Mach 0.6, 1.9× at Mach 1.05–1.1, 1.0 by Mach 5\n"+
         "Normal force N = q·A·C_Nα·sin α (at the centre of pressure)\n"+
         "Pitch damping τ = −q·A·L²·C_mq·ω / (2v)\n\n"+
-        "<b>Thrust vectoring</b>\n"+
+
+        "<b>Thrust vectoring</b> - RocketAssemblyController.UpdateFlightGimbals\n"+
+        "<i>The engines swivel (gimbal) within their real range and rate limits. "+
+        "Thrust tilted by θ, acting a lever arm L below the centre of mass, "+
+        "turns the vehicle. With SAS on (T), a damped spring controller picks "+
+        "the turning rate it wants, then solves for the gimbal angle that "+
+        "produces it; roll uses the outer engines swivelling in opposite "+
+        "directions.</i>\n"+
         "Gimbal torque τ = L·F·sin θ\n"+
         "SAS: α = ωn²·error − 2ζωn·ω, θ = asin(I·α / (L·F))\n\n"+
-        "<b>Aerodynamic heating</b>\n"+
+
+        "<b>Aerodynamic heating</b> - ReentryHeating.cs\n"+
+        "<i>Heat flux at the nose from the Sutton-Graves relation. The hull is 96 "+
+        "patches facing every direction: each is heated by how squarely it faces "+
+        "the oncoming air and cools by radiating. Each patch belongs to a heat "+
+        "zone (tiles, RCC, bare metal) with its own temperature limit; going "+
+        "over the limit burns the vehicle up. On ascent it stays far below every "+
+        "limit; it matters on re-entry (H shows the zones).</i>\n"+
         "Sutton-Graves q = 1.7415e-4·√(ρ / rn)·v³\n"+
         "Skin C·dT/dt = q·cos^1.5 θ − ε·σ·(T^4 − T_air^4)\n\n"+
-        "<b>Motion</b>\n"+
+
+        "<b>Autopilot</b> - Autopilot.cs\n"+
+        "<i>A state machine run every physics step. Ascent: straight up, then a "+
+        "gravity turn whose pitch follows a fixed curve, then (above 35 km) "+
+        "closed-loop guidance that steers toward the target orbit's speed and "+
+        "climbs only as fast as is needed to arrive there level. Each later "+
+        "burn is planned the same way: when to start, which way to point and "+
+        "what ends it (a target high/low point, an energy, or a Δv); it coasts "+
+        "(time-warping) until 4 min before, turns, burns, and checks the cut-off "+
+        "every step. Orbit changes are Hohmann transfers: one burn to stretch the "+
+        "orbit to the new height, a coast half an orbit, a second to round it. "+
+        "Max orbit finds the highest round orbit the Δv left affords (bisection "+
+        "on the Hohmann cost, capped where the Moon breaks orbits up); a custom "+
+        "height checks the transfer fits the Δv before going up or down.</i>\n"+
+        "Orbit: ε = v²/2 − μ/r, h = r × v, e = (v × h)/μ − r̂, p = h²/μ, r_pe = p/(1+e), r_ap = p/(1−e)\n"+
+        "Gravity turn pitch γ = 90° − 65°·(h / 70 km)^0.55\n"+
+        "Vis-viva v² = μ(2/r − 1/a)\n"+
+        "Hohmann Δv₁ = √(μ/r₁)(√(r₂/a) − 1), Δv₂ = √(μ/r₂)(1 − √(r₁/a)), a = (r₁+r₂)/2\n"+
+        "Time to apoapsis: M = E − e·sin E, t = (π − M)·√(a³/μ)\n"+
+        "Burn time t = m·ve/F·(1 − e^(−Δv/ve)), ve = Isp·g₀\n"+
+        "Δv budget = Σ Isp·g₀·ln(m₀/m₁) over the stages left, less 5 % reserve\n\n"+
+
+        "<b>Motion</b> - Unity PhysX (Rigidbody)\n"+
+        "<i>All the forces and torques above are summed by the physics engine, "+
+        "which integrates velocity and position each step.</i>\n"+
         "a = ΣF / m, α = Στ / I";
 
     private static void DrawGimbalIndicator(string label,float angle)
@@ -498,6 +654,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         radius=rings.Count>0?rings[^1].radius:0f;indexOnRing=0;countOnRing=1;
     }
 
+    // STUDY: REBUILD: makes the sandbox rocket from 'layout' - engine sockets in rings, frame, tanks; called after every edit.
     private void Rebuild()
     {
         if(cluster!=null) { cluster.gameObject.SetActive(false); Destroy(cluster.gameObject); }
@@ -764,6 +921,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         return index==0?(p.firstStageName??"First stage"):p.upperStages[index-1].name;
     }
 
+    // STUDY: STAGING EACH FRAME: checks the timeline (auto-staging) and the burn-out of the current stage, then Separate -> Ignite the next.
     private void UpdateStaging()
     {
         if(activePresetIndex<0 || flight.Crashed)return;
@@ -1265,6 +1423,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         return solid!=null?(float)(solid.inertMass*flight.SolidBoosterCount):0f;
     }
 
+    // STUDY: SEPARATION: drops the spent stage (Detach -> DroppedStage), loads the next stage's propellant and mass into RocketFlightModel.
     private void Separate(RocketPresets.Preset p,RocketPresets.StageSpec next,float now)
     {
         var spentParts=stageIndex==0?p.firstStageModelStages:p.upperStages[stageIndex-1].modelStages;
@@ -1510,6 +1669,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         pilotInput=Vector2.ClampMagnitude(input,1f);
     }
 
+    // STUDY: PHYSICS STEP: entry aerodynamics for the stage flying, then gimbal steering (UpdateFlightGimbals).
     private void FixedUpdate()
     {
         if(rocket==null || catalog==null)return;
@@ -1756,6 +1916,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         }
     }
 
+    // STUDY: STEERING WITH ENGINES OFF: RCS-like torque toward the held attitude.
     private void ApplyAttitudeControl()
     {
         var body=rocket.GetComponent<Rigidbody>();
@@ -1804,6 +1965,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         body.AddRelativeTorque(Vector3.Scale(body.inertiaTensor,alpha),ForceMode.Force);
     }
 
+    // STUDY: STEERING: turns pilot keys or SAS (hold / prograde / autopilot attitude) into a gimbal angle for each engine - this is how the rocket is turned under thrust.
     private void UpdateFlightGimbals()
     {
         ApplyAttitudeControl();
@@ -1881,6 +2043,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         flightGimbal=count>0?-shown/count:Vector2.zero;
     }
 
+    // STUDY: EACH FRAME: H key (heat map), staging, pilot keys and throttle in flight; part picking on the pad.
     private void Update()
     {
         if(rocket==null || catalog==null)return;
@@ -2100,6 +2263,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
         if(oxidizerMaterial!=null)oxidizerMaterial.color=oxidizer;
     }
 
+    // STUDY: LOAD A REAL ROCKET: copies a RocketPresets entry into the controller, Rocket and RocketFlightModel (body model, engines, propellant, masses, flight program, staging).
     /// <summary>
     /// Configures the assembly to match a real vehicle (RocketPresets) and
     /// locks the sandbox editing UI - see the class doc comment on
@@ -2295,6 +2459,7 @@ public sealed class RocketAssemblyController : MonoBehaviour
 
     private GUIStyle backStyle;
 
+    // STUDY: THE LEFT PANEL: pad back/launch buttons, or the full panel (FlightControls in flight, the sandbox editors on the pad). Redrawn every frame.
     private void OnGUI()
     {
         if(catalog==null || LaunchMenu.Open)return;

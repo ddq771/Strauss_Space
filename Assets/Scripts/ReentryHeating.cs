@@ -1,6 +1,18 @@
 using System;
 using UnityEngine;
 
+// STUDY: ==================== STUDY GUIDE: ReentryHeating ====================
+// STUDY: WHAT: aerodynamic heating. The hull is treated as 96 patches facing every
+// STUDY: direction (a Fibonacci sphere of normals). Each FixedUpdate: heat flux at
+// STUDY: the nose (Sutton-Graves), each patch heated by how squarely it faces the
+// STUDY: oncoming air and cooled by radiation; over its zone's rated temperature the
+// STUDY: vehicle burns up (BurnedUp -> RocketFlightModel.BurnUp).
+// STUDY: ALSO: the glow/plasma sheath, hot trail and light (UpdateVisuals), and the
+// STUDY: heat-zone map (H) - tinted copies of every hull mesh drawn with
+// STUDY: HeatZones.shader (UpdateHeatMap, OtherStagesOnMap for stages not flying).
+// STUDY: WIRING: AttachToRocket (at scene load) connects it to the flight model and
+// STUDY: the controller's CurrentHeatProtection; AttachToDebris for dropped stages.
+
 /// <summary>
 /// Aerodynamic heating and the re-entry glow, for the rocket and for
 /// falling spent stages.

@@ -1,5 +1,10 @@
 using UnityEngine;
 
+// STUDY: ==================== STUDY GUIDE: ProceduralEngine ====================
+// STUDY: WHAT: builds a simple engine model (chamber + bell meshes) for engines
+// STUDY: without an imported model, sized from its parameters. Origin = mount
+// STUDY: point, nozzle hangs down -Y.
+
 /// <summary>
 /// Procedurally-built engine visual for engines with no imported model (see
 /// EngineCatalogSetup, which builds every catalog entry either from an FBX

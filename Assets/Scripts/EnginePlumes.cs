@@ -1,6 +1,13 @@
 using System.Collections.Generic;
 using UnityEngine;
 
+// STUDY: ==================== STUDY GUIDE: EnginePlumes ====================
+// STUDY: WHAT: visuals only - the exhaust flame behind each firing engine (cone
+// STUDY: mesh + EnginePlume.shader), sized from that engine's thrust this step
+// STUDY: (RocketFlightModel.SocketThrust) and widening as the air thins; colour by
+// STUDY: propellant (Colors); plumes for solid boosters; a light; smoke trails low
+// STUDY: in the atmosphere. All rebuilt/updated in LateUpdate.
+
 /// <summary>
 /// The fire from the engines: a glowing exhaust plume behind every engine
 /// that is firing, sized by that engine's thrust this step and its nozzle

@@ -1,6 +1,21 @@
 using UnityEngine;
 using System.Collections.Generic;
 
+// STUDY: ==================== STUDY GUIDE: Rocket ====================
+// STUDY: WHAT: the vehicle object itself - its Rigidbody, its body mesh (a built
+// STUDY: frustum shape or a Blender model via SetBodyModel), the launch clamp that
+// STUDY: holds it on the pad, the engine on/off switch and throttle.
+// STUDY: FLOW: StartEngine/SetThrottle (from the controller, keys or Autopilot) ->
+// STUDY:   each FixedUpdate, if lit, RocketFlightModel.Step does the real thrust and
+// STUDY:   propellant work. (The fallback code below it is the original simple
+// STUDY:   engine, only used if there's no RocketFlightModel.)
+// STUDY: "Active stack" (SetActiveStack): after staging, which part of the model is
+// STUDY:   still attached - used for height/diameter in drag and heating.
+// STUDY: SECTIONS: Start/EnsureLaunchPlatformCollider (pad setup) ... FixedUpdate
+// STUDY:   (thrust each step, NaN safety reset) ... StartEngine/StopEngine/SetThrottle
+// STUDY:   ... ApplyMass ... BuildVisual/BuildFrustum (procedural body mesh) ...
+// STUDY:   SetLaunchClamp (kinematic on the pad until ignition).
+
 [RequireComponent(typeof(Rigidbody))]
 public sealed class Rocket : MonoBehaviour
 {
@@ -281,6 +296,7 @@ public sealed class Rocket : MonoBehaviour
     }
 #endif
 
+    // STUDY: EACH PHYSICS STEP: safety reset if physics went NaN, then hand the lit engine to RocketFlightModel.Step.
     private void FixedUpdate()
     {
         if (!IsFinite(transform.position) || !IsFinite(body.linearVelocity) ||

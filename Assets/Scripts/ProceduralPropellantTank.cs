@@ -1,6 +1,10 @@
 using System;
 using UnityEngine;
 
+// STUDY: ==================== STUDY GUIDE: ProceduralPropellantTank ====================
+// STUDY: WHAT: sandbox tank - a cylinder sized from a volume and diameter
+// STUDY: (Configure). Created by RocketAssemblyController.RebuildTanks.
+
 // Dimensions are metres under the assembly's metre-to-world transform.
 public sealed class ProceduralPropellantTank : MonoBehaviour
 {

@@ -1,5 +1,9 @@
 using UnityEngine;
 
+// STUDY: ==================== STUDY GUIDE: RocketMountFrame ====================
+// STUDY: WHAT: the sandbox engine mount frame; tilts each engine mount to show its
+// STUDY: gimbal angle (SetAngle). Driven by RocketAssemblyController.
+
 public sealed class RocketMountFrame : MonoBehaviour
 {
     public const float PreviewAngleLimit=10f;

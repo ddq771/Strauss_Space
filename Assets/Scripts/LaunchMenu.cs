@@ -1,5 +1,12 @@
 using UnityEngine;
 
+// STUDY: ==================== STUDY GUIDE: LaunchMenu ====================
+// STUDY: WHAT: the opening screens, drawn with Unity's immediate-mode GUI (OnGUI,
+// STUDY: redrawn every frame). Screens: Start (build or real rocket) -> Rocket
+// STUDY: (pick from RocketPresets.All) -> Payload (sliders for payload and fuel,
+// STUDY: live mass/TWR/delta-v) -> "Go to the pad", which calls the controller's
+// STUDY: LoadPreset. While Open is true the other panels hide themselves.
+
 /// <summary>
 /// The opening menu, drawn over the live scene: choose to build a rocket
 /// (the sandbox assembly) or to launch a real one; for a real rocket, pick

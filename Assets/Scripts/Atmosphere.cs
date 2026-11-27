@@ -1,5 +1,11 @@
 using UnityEngine;
 
+// STUDY: ==================== STUDY GUIDE: Atmosphere ====================
+// STUDY: WHAT: visuals only - the blue sky / limb glow seen from orbit, one shell
+// STUDY: mesh with the Atmosphere.shader doing Rayleigh/Mie/ozone scattering.
+// STUDY: Update pushes the sun direction and camera values to the shader each frame.
+// STUDY: Does not affect flight (StandardAtmosphere does that).
+
 /// <summary>
 /// Draws the planet's atmosphere as one physically based scattering shell
 /// (see Shaders/Atmosphere.shader): Rayleigh + Mie single scattering through

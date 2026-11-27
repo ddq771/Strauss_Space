@@ -1,6 +1,12 @@
 using System.Collections.Generic;
 using UnityEngine;
 
+// STUDY: ==================== STUDY GUIDE: DroppedStage ====================
+// STUDY: WHAT: a spent stage after separation. Create() moves the stage's meshes
+// STUDY: onto a new object with its own rigidbody, mass and separation push; then
+// STUDY: it falls under gravity and drag (FixedUpdate) and can burn up via
+// STUDY: ReentryHeating.AttachToDebris. Called from RocketAssemblyController.Detach.
+
 /// <summary>
 /// A spent stage (or strap-on booster, SRB...) after separation: it keeps
 /// the vehicle's velocity and spin at the moment it was let go, plus a small

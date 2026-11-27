@@ -1,6 +1,12 @@
 using UnityEngine;
 using System.Collections.Generic;
 
+// STUDY: ==================== STUDY GUIDE: PlanetBody ====================
+// STUDY: WHAT: Earth. Mass, radius, spin; the smooth sphere mesh; and gravity:
+// STUDY: each FixedUpdate it finds every rigidbody within its Hill sphere and adds
+// STUDY: a = G*M/r^2 toward its centre (GetGravityAcceleration).
+// STUDY: WorldUnitsPerMeter (0.001) - the scene's scale constant used everywhere.
+
 [RequireComponent(typeof(SphereCollider))]
 [RequireComponent(typeof(Rigidbody))]
 public sealed class PlanetBody : MonoBehaviour

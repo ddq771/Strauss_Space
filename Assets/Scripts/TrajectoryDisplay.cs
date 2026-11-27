@@ -2,6 +2,15 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 
+// STUDY: ==================== STUDY GUIDE: TrajectoryDisplay ====================
+// STUDY: WHAT: the predicted path drawn in the scene and the Ap / Pe / impact
+// STUDY: markers. Each LateUpdate (throttled): Solve() predicts the coast from now -
+// STUDY: RK4 with drag below 100 km (Integrate/Rk4/Accel), an exact Kepler conic
+// STUDY: above (FollowConic/Conic), or the Earth+Moon integrator near the Moon
+// STUDY: (FollowMoonPath). Also keeps the trail of the path flown (RecordTrail).
+// STUDY: PUBLIC: ApoapsisAltitude, PeriapsisAltitude, TimeToApoapsis, InOrbit,
+// STUDY: Escaping... read by the side panel; Km() and Clock() formatters used all over.
+
 /// <summary>
 /// Draws the rocket's predicted coasting trajectory once it is flying (engines
 /// off from now on), the path actually flown so far, and Ap / Pe / impact

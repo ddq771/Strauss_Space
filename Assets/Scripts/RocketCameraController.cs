@@ -1,5 +1,10 @@
 using UnityEngine;
 
+// STUDY: ==================== STUDY GUIDE: RocketCameraController ====================
+// STUDY: WHAT: an older two-camera setup - a close "local" camera following the
+// STUDY: rocket and a far "world" camera, swapped with V or by zoom distance. Set up
+// STUDY: by the Editor scene tools; AssemblyViewCamera is the main camera now.
+
 [RequireComponent(typeof(Camera))]
 public sealed class RocketCameraController : MonoBehaviour
 {

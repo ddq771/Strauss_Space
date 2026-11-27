@@ -1,5 +1,10 @@
 using UnityEngine;
 
+// STUDY: ==================== STUDY GUIDE: AssemblySelectable ====================
+// STUDY: WHAT: makes a sandbox part clickable on the pad: a ray test against its
+// STUDY: bounds (IntersectRay) and a highlight when selected. The controller's
+// STUDY: SelectAtRay checks every AssemblySelectable under the mouse.
+
 public sealed class AssemblySelectable : MonoBehaviour
 {
     public enum PartKind { Engine, Frame, FuelTank, OxidizerTank }

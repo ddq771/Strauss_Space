@@ -1,6 +1,14 @@
 using System;
 using UnityEngine;
 
+// STUDY: ==================== STUDY GUIDE: SolarSystem ====================
+// STUDY: WHAT: the date and the Sun. Holds the simulation's calendar date (Date,
+// STUDY: DateAt(gameTime)) that the Moon, Earth's spin and the Sun all follow;
+// STUDY: Earth's real orbit around the Sun and its axial tilt (which direction the
+// STUDY: sunlight comes from, the seasons); the scene lighting; the Sun's tidal pull
+// STUDY: on the rocket (FixedUpdate); orbit/axis lines in the map view.
+// STUDY: KEY CALLS: DateAt, RotationAngleAt (how far Earth has turned), SunOffsetFromEarth.
+
 /// <summary>
 /// Earth's real orbit around the Sun: an ellipse of semi-major axis 1 AU
 /// (149.6 million km, eccentricity 0.0167 - 147.1 million km at perihelion in

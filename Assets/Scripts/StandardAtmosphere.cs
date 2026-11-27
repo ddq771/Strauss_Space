@@ -1,5 +1,12 @@
 using System;
 
+// STUDY: ==================== STUDY GUIDE: StandardAtmosphere ====================
+// STUDY: WHAT: maths only. US Standard Atmosphere 1976 - temperature, pressure,
+// STUDY: density and speed of sound at any altitude, from 7 layers with fixed
+// STUDY: temperature gradients. Used by drag (RocketFlightModel), heating, engine
+// STUDY: back-pressure, the Autopilot's ascent simulation and the panels.
+// STUDY: (Atmosphere.cs is the separate visual sky.)
+
 /// <summary>
 /// US Standard Atmosphere 1976: temperature, pressure, density and speed of
 /// sound against altitude, layer by layer - temperature falls 6.5 K/km

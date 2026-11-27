@@ -1,6 +1,15 @@
 using System;
 using UnityEngine;
 
+// STUDY: ==================== STUDY GUIDE: TimeWarp ====================
+// STUDY: WHAT: game speed. x2-x10: Time.timeScale (physics just runs faster).
+// STUDY: x100 and up: "on rails" - the rocket's rigidbody is made kinematic and it is
+// STUDY: placed each frame on its exact two-body orbit (Kepler, universal variables
+// STUDY: with Stumpff functions) while the clock jumps ahead. Rails stop itself
+// STUDY: before the air or a big Moon encounter (RailsBlocker / Stop).
+// STUDY: API: TimeWarp.Request(rate), Rate, OnRails, ClockMultiplier (how many
+// STUDY: simulated seconds per game second - the clock everyone uses).
+
 /// <summary>
 /// Simulation speed. Up to ×50 the physics simply runs faster
 /// (Time.timeScale). ×100 up to ×1,000,000 are "on rails", as in KSP: thousands of

@@ -3,6 +3,11 @@ using System.Globalization;
 using System.IO;
 using UnityEngine;
 
+// STUDY: ==================== STUDY GUIDE: FlightRecorder ====================
+// STUDY: WHAT: writes telemetry to a CSV in Assets/Data every sampleInterval
+// STUDY: seconds of simulated flight (Begin when the clamp releases, WriteRow,
+// STUDY: End on impact or return to assembly), with blank lines between stages.
+// STUDY: Read-only: it changes nothing in the flight.
 
 /// <summary>
 /// Writes flight telemetry to a CSV file, one row every

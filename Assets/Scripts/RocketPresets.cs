@@ -1,5 +1,16 @@
 using UnityEngine;
 
+// STUDY: ==================== STUDY GUIDE: RocketPresets ====================
+// STUDY: WHAT: pure data - the real rockets (Falcon 9, Starship, Vostok, Saturn V,
+// STUDY: Shuttle, ...). Each Preset: body size and model, engines, propellant, dry
+// STUDY: mass, payload, first-stage flight program (throttle schedule, MECO), strap-on
+// STUDY: drops, upper stages (StageSpec), heat protection per stage (HeatProtection
+// STUDY: / HeatZone), aerodynamics. No behaviour lives here.
+// STUDY: USED BY: LaunchMenu (the line-up), RocketAssemblyController.LoadPreset and
+// STUDY: staging, Autopilot (stage masses for delta-v and the ascent simulation),
+// STUDY: ReentryHeating (zones), RocketFlightModel.
+// STUDY: To add a rocket: add a new Preset to All - it appears in the menu by itself.
+
 /// <summary>
 /// Fixed, non-editable real-vehicle configurations, selectable from the
 /// assembly screen instead of building from scratch. Engine performance

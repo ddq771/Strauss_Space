@@ -1,5 +1,13 @@
 using System;
 
+// STUDY: ==================== STUDY GUIDE: EarthMoonDynamics ====================
+// STUDY: WHAT: maths only, no scene objects. Coasting motion under Earth + Moon +
+// STUDY: Sun gravity, for planning and prediction (Autopilot's TLI search and course
+// STUDY: corrections, TrajectoryDisplay near the Moon, TimeWarp checks).
+// STUDY: MoonTrack: a table of the Moon's (and Sun's) positions over a time span,
+// STUDY: interpolated - much faster than evaluating the lunar series every step.
+// STUDY: Step(): one RK4 integration step with an adaptive size (SuggestedStep).
+
 /// <summary>
 /// Coasting flight under Earth's, the Moon's and the Sun's gravity, for the
 /// trajectory prediction and rails time warp - the same forces the physics
